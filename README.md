@@ -4,6 +4,7 @@
 
 <p align="center">
   <a href="https://pkg.go.dev/github.com/paulmanoni/deco"><img src="https://pkg.go.dev/badge/github.com/paulmanoni/deco.svg" alt="Go Reference"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT License"></a>
 </p>
 
 # deco
@@ -195,17 +196,23 @@ GET /users  (X-Role: admin) → [mw] auth: allow  → 200 users: alice, bob
 Without the header the handler never runs; `RequireRole` short-circuits with a
 403. With it, the request flows through to the handler.
 
-## Use it as a library (no CLI)
+## API
 
-The transpiler is also a package, so you can run it from your own Go code or
-tooling:
+deco ships two importable packages. Full reference on
+[pkg.go.dev](https://pkg.go.dev/github.com/paulmanoni/deco).
+
+### `…/transpiler` — run the transpiler from Go (no CLI)
+
+| function | what it does |
+|----------|--------------|
+| `Generate(dir string) error` | rename originals and write `<file>_gen.go` across the package tree |
+| `Transform(dir string) ([]Output, error)` | the same generation, returned in memory — no writes |
+| `Overlay(dir string) (path string, cleanup func(), err error)` | write a `go build -overlay` JSON; source left untouched |
 
 ```go
 import "github.com/paulmanoni/deco/transpiler"
 
-transpiler.Generate("./mypkg")    // write <file>_gen.go across the tree
-transpiler.Transform("./mypkg")   // []Output (path + content) in memory, no writes
-transpiler.Overlay("./mypkg")     // overlay JSON for `go build -overlay`
+if err := transpiler.Generate("./mypkg"); err != nil { ... }
 ```
 
 Or wire it into `go generate` without installing the binary:
@@ -214,7 +221,17 @@ Or wire it into `go generate` without installing the binary:
 //go:generate go run github.com/paulmanoni/deco generate .
 ```
 
-Full API docs: [pkg.go.dev/github.com/paulmanoni/deco](https://pkg.go.dev/github.com/paulmanoni/deco).
+### `…/decorators` — helpers for writing decorators
+
+| function | what it does |
+|----------|--------------|
+| `Func[F any](fn F, mw func(proceed func())) F` | wrap a call as middleware — call `proceed()` to run it |
+| `FuncValues[F any](fn F, mw func(args []any, proceed func([]any) []any) []any) F` | request-aware: read or modify the arguments and results |
+| `Logged[F any](fn F) F` | example decorator — logs entry and exit |
+| `Timing[F any](label string, fn F) F` | example decorator — measures duration |
+
+All are generic and signature-preserving; `Func`/`FuncValues` do the reflection
+for you so your decorators contain none.
 
 ## Performance
 
@@ -257,3 +274,11 @@ helper.
 - Use `decorators.Func` to wrap a call, or `decorators.FuncValues` when you need
   to read or modify the arguments/return values. Both avoid hand-written
   reflection.
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md) for the release history.
+
+## License
+
+[MIT](LICENSE) © Paul Manoni
