@@ -1,10 +1,11 @@
-// Package middleware provides decorator-style HTTP middleware. Each is a
-// generic decorator built on decorators.Func (no reflection here), so it can
-// wrap a handler of any signature while preserving its type.
+// Package middleware provides decorator-style HTTP middleware built on the
+// decorators toolkit (no hand-written reflection here): Logged uses Func, while
+// RequireRole uses FuncValues so it can read the request.
 package middleware
 
 import (
 	"fmt"
+	"net/http"
 
 	"github.com/paulmanoni/deco/decorators"
 )
@@ -18,11 +19,32 @@ func Logged[F any](fn F) F {
 	})
 }
 
-// RequireRole is a parameterised decorator: the role is the leading argument
-// supplied in the annotation, e.g. //@decorate middleware.RequireRole("admin").
+// RequireRole is a REQUEST-AWARE decorator built on decorators.FuncValues: it
+// reads the *http.Request from the handler's arguments and checks the X-Role
+// header, denying the request (and short-circuiting the handler) when it does
+// not match. role is the leading annotation argument, e.g.
+// //@decorate middleware.RequireRole("admin").
 func RequireRole[F any](role string, fn F) F {
-	return decorators.Func(fn, func(proceed func()) {
-		fmt.Printf("  [mw] auth: require role %q — ok\n", role)
-		proceed()
+	return decorators.FuncValues(fn, func(args []any, proceed func([]any) []any) []any {
+		var w http.ResponseWriter
+		var r *http.Request
+		for _, a := range args {
+			switch v := a.(type) {
+			case http.ResponseWriter:
+				w = v
+			case *http.Request:
+				r = v
+			}
+		}
+		if r == nil || r.Header.Get("X-Role") != role {
+			fmt.Printf("  [mw] auth: DENY (need role %q)\n", role)
+			if w != nil {
+				w.WriteHeader(http.StatusForbidden)
+				fmt.Fprintf(w, "forbidden: need role %q\n", role)
+			}
+			return nil // short-circuit: handler never runs
+		}
+		fmt.Printf("  [mw] auth: allow role %q\n", role)
+		return proceed(args)
 	})
 }

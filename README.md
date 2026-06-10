@@ -87,6 +87,29 @@ func guard[F any](allowed bool, fn F) F {
 `decorators.Func` works for **any** signature — multiple returns, no returns,
 variadics — and runs the reflection once.
 
+### Request-aware decorators (reading args & results)
+
+When a decorator needs to *read or modify* the arguments or return values — e.g.
+auth middleware that inspects the `*http.Request` — use `decorators.FuncValues`.
+It exposes args and results as `[]any`:
+
+```go
+func RequireRole[F any](role string, fn F) F {
+	return decorators.FuncValues(fn, func(args []any, proceed func([]any) []any) []any {
+		for _, a := range args {
+			if r, ok := a.(*http.Request); ok && r.Header.Get("X-Role") == role {
+				return proceed(args)        // authorised → run the handler
+			}
+		}
+		return nil                          // denied → short-circuit (zero results)
+	})
+}
+```
+
+`proceed(args)` runs the wrapped function (pass modified args to rewrite them);
+returning your own values replaces the results. See `./examples/router` for a
+working version that writes a 403.
+
 ## Using decorators
 
 Annotate a function. Decorators **stack bottom-up**: the topmost annotation is
@@ -135,5 +158,6 @@ with `//@decorate routing.Route("GET", "/users")` registers it.
 
 - Decorators are applied once, at package init (like Python's `fn = a(b(fn))`).
 - Methods (functions with receivers) are not supported in v1.
-- Decorators built with `decorators.Func` wrap the call but don't expose the
-  arguments/return values; for those, write the `reflect`-based form directly.
+- Use `decorators.Func` to wrap a call, or `decorators.FuncValues` when you need
+  to read or modify the arguments/return values. Both avoid hand-written
+  reflection.

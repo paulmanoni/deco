@@ -72,6 +72,88 @@ func Func[F any](fn F, mw func(proceed func())) F {
 	return wrapped.Interface().(F)
 }
 
+// FuncValues is like Func, but exposes the call's arguments and return values
+// as []any so a decorator can inspect or replace them — for example,
+// request-aware HTTP middleware that reads the *http.Request from args.
+//
+// mw receives the incoming arguments and a proceed callback that runs the
+// wrapped function (optionally with different arguments) and returns its
+// results. Whatever mw returns becomes the decorated call's results; return
+// fewer or nil values and the missing results default to their zero value. Skip
+// calling proceed to short-circuit entirely.
+//
+// Each returned value must be assignable to the corresponding result type. For
+// a variadic function, the final element of args is the variadic slice.
+func FuncValues[F any](fn F, mw func(args []any, proceed func(args []any) []any) []any) F {
+	v := reflect.ValueOf(fn)
+	t := v.Type()
+	if t.Kind() != reflect.Func {
+		panic(fmt.Sprintf("deco: decorator applied to non-function %s", t))
+	}
+	wrapped := reflect.MakeFunc(t, func(in []reflect.Value) []reflect.Value {
+		proceed := func(args []any) []any {
+			return toAny(callThrough(v, toValues(t, args)))
+		}
+		return toResults(t, mw(toAny(in), proceed))
+	})
+	return wrapped.Interface().(F)
+}
+
+// callThrough invokes fn with the given reflected arguments, forwarding the
+// variadic slice with CallSlice when needed.
+func callThrough(fn reflect.Value, args []reflect.Value) []reflect.Value {
+	if fn.Type().IsVariadic() {
+		return fn.CallSlice(args)
+	}
+	return fn.Call(args)
+}
+
+// toAny converts reflected values to plain interface values.
+func toAny(vs []reflect.Value) []any {
+	out := make([]any, len(vs))
+	for i, v := range vs {
+		out[i] = v.Interface()
+	}
+	return out
+}
+
+// toValues converts argument interfaces back to reflected values matching fn's
+// parameter types, using a typed zero value for nil entries.
+func toValues(t reflect.Type, args []any) []reflect.Value {
+	out := make([]reflect.Value, len(args))
+	for i, a := range args {
+		if a == nil {
+			out[i] = reflect.Zero(paramType(t, i))
+		} else {
+			out[i] = reflect.ValueOf(a)
+		}
+	}
+	return out
+}
+
+// paramType returns fn's i-th parameter type (for a variadic function the final
+// declared parameter type is the slice).
+func paramType(t reflect.Type, i int) reflect.Type {
+	if i < t.NumIn() {
+		return t.In(i)
+	}
+	return reflect.TypeFor[any]()
+}
+
+// toResults converts the decorator's returned interfaces to reflected values of
+// fn's result types, defaulting missing or nil entries to the zero value.
+func toResults(t reflect.Type, results []any) []reflect.Value {
+	out := make([]reflect.Value, t.NumOut())
+	for i := range out {
+		if i < len(results) && results[i] != nil {
+			out[i] = reflect.ValueOf(results[i])
+		} else {
+			out[i] = reflect.Zero(t.Out(i))
+		}
+	}
+	return out
+}
+
 // Logged returns a wrapper that prints a line when the function is entered and
 // another when it returns. It works for any function signature.
 func Logged[F any](fn F) F {

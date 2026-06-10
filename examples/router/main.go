@@ -23,10 +23,22 @@ import (
 func main() {
 	mux := routing.Mux() // every //@decorate routing.Route(...) is already registered
 
-	for _, path := range []string{"/health", "/users"} {
-		fmt.Printf("GET %s\n", path)
+	get := func(path, role string) {
+		if role == "" {
+			fmt.Printf("GET %s\n", path)
+		} else {
+			fmt.Printf("GET %s  (X-Role: %s)\n", path, role)
+		}
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		if role != "" {
+			req.Header.Set("X-Role", role)
+		}
 		rec := httptest.NewRecorder()
-		mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		mux.ServeHTTP(rec, req)
 		fmt.Printf("  -> %d %s", rec.Code, rec.Body.String())
 	}
+
+	get("/health", "")        // no auth required
+	get("/users", "")         // request-aware auth denies: no X-Role header
+	get("/users", "admin")    // allowed: header matches RequireRole("admin")
 }
