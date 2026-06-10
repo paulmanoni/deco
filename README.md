@@ -1,13 +1,8 @@
 # deco
 
-A comment-hosted **decorator transpiler** that brings Python-style decorators to
-Go via code generation.
-
-You annotate any plain function with doc comments. `deco` renames the
-original function and generates a **type-matched wrapper** with the *same* name
-and *identical* signature that applies your decorators. Every existing caller of
-the original name therefore transparently flows through the decorator chain —
-exactly like Python's `fn = a(b(fn))`.
+Python-style decorators for Go, via code generation. Annotate any function with
+a doc comment and `deco` wraps it — every caller of the original name
+transparently flows through your decorators.
 
 ```go
 //@decorate logged
@@ -15,9 +10,13 @@ exactly like Python's `fn = a(b(fn))`.
 func Add(a, b int) int { return a + b }
 ```
 
-becomes, conceptually, `Add = logged(timing("slow", Add))`.
-
----
+```sh
+deco run .
+# [log] -> calling func(int, int) int
+# [time] slow took 21µs
+# [log] <- returned from func(int, int) int
+# Add(2, 3) = 5
+```
 
 ## Install
 
@@ -25,368 +24,109 @@ becomes, conceptually, `Add = logged(timing("slow", Add))`.
 go install github.com/paulmanoni/deco@latest
 ```
 
-This drops a `deco` binary in `$(go env GOBIN)` (or `$(go env GOPATH)/bin`);
-make sure that directory is on your `PATH`. The `main` package lives at the
-module root, so the installed command is simply `deco`.
-
-To build from a local clone instead:
+## Commands
 
 ```sh
-go install .      # or: go build -o deco .
+deco run [dir]        # run the program with decorators applied (source untouched)
+deco build [dir]      # build it
+deco generate [dir]   # write the generated wrappers to disk instead
 ```
 
----
+`dir` defaults to `.` and may also be a `.go` file. `run` and `build` use Go's
+`-overlay`, so your source files are never modified; `generate` writes
+`<file>_gen.go` files next to your code.
 
-## The model
+## Creating a custom decorator
 
-A **decorator** is a generic function that takes the wrapped function (plus any
-optional leading arguments) and returns a function of the **same** signature:
-
-```go
-func logged[F any](fn F) F                 { ... }
-func timing[F any](label string, fn F) F   { ... }
-```
-
-The shipped library (`github.com/paulmanoni/deco/decorators`) provides example
-decorators `Logged` and `Timing` that work for **any** signature.
-
-### Writing your own decorator — without reflection
-
-You don't write `reflect` yourself. The library exposes one helper, `Func`,
-that turns ordinary middleware into a signature-preserving decorator. You're
-handed a `proceed()` thunk and decide when to call it:
+A decorator is a generic function that takes the wrapped function and returns
+one of the **same type**. Build it with `decorators.Func` — you write plain
+middleware, no reflection:
 
 ```go
+import "github.com/paulmanoni/deco/decorators"
+
 func logged[F any](fn F) F {
 	return decorators.Func(fn, func(proceed func()) {
-		fmt.Println("[log] ->")
-		proceed()
-		fmt.Println("[log] <-")
+		fmt.Println("-> start")
+		proceed()          // runs the wrapped function
+		fmt.Println("<- done")
 	})
 }
+```
 
+Call `proceed()` where you like:
+
+```go
+// timing — a decorator that takes an argument (passed BEFORE the function)
 func timing[F any](label string, fn F) F {
 	return decorators.Func(fn, func(proceed func()) {
 		start := time.Now()
 		proceed()
-		fmt.Printf("[time] %s took %s\n", label, time.Since(start))
+		fmt.Printf("%s took %s\n", label, time.Since(start))
+	})
+}
+
+// retry — call proceed() more than once
+func retry[F any](n int, fn F) F {
+	return decorators.Func(fn, func(proceed func()) {
+		for i := 0; i < n; i++ {
+			ok := func() (ok bool) { defer func() { ok = recover() == nil }(); proceed(); return }()
+			if ok { return }
+		}
+	})
+}
+
+// guard — don't call proceed() to short-circuit (returns the zero value)
+func guard[F any](allowed bool, fn F) F {
+	return decorators.Func(fn, func(proceed func()) {
+		if allowed { proceed() }
 	})
 }
 ```
 
-Call `proceed` around your logic (logging/timing/tracing), more than once
-(retry), inside a `recover` (swallow panics), or not at all (short-circuit —
-the call then returns the zero value of each result type). `Func` handles
-variadics and any number of results internally; `reflect` lives only inside it.
+`decorators.Func` works for **any** signature — multiple returns, no returns,
+variadics — and runs the reflection once.
 
-The only irreducible boilerplate is the `func name[F any](fn F) F { … }`
-declaration — `deco` needs a *named generic function* to reference from the
-annotation — but its body is plain middleware. For decorators that must read or
-rewrite arguments/results, drop down to the `reflect`-based form directly.
+## Using decorators
 
-### Annotation syntax
-
-Decorators are doc comments directly above a function:
-
-- Bare name: `//@decorate logged` — resolves to a function in the same package.
-- With args:  `//@decorate timing("slow")` — args are passed **before** the
-  wrapped function, matching the `func timing[F any](label string, fn F) F`
-  contract.
-- Qualified name: `//@decorate decorators.Logged` — refers to a decorator in
-  another package (see `//deco:import` just below).
-
-### Qualified decorators and `//deco:import`
-
-To use a decorator from another package directly (no same-package alias), tell
-`deco` where it lives with a package-wide `//deco:import` directive, then refer
-to it by its qualified name:
+Annotate a function. Decorators **stack bottom-up**: the topmost annotation is
+the outermost wrapper.
 
 ```go
-//deco:import "github.com/paulmanoni/deco/decorators"
-
-//@decorate decorators.Logged
-//@decorate decorators.Timing("slow")
+//@decorate logged          // outermost
+//@decorate timing("slow")  // innermost
 func Add(a, b int) int { return a + b }
 ```
 
-`deco` injects the needed `import` into the generated `<file>_gen.go` (only when
-that file actually uses the selector, so there's never an unused import). The
-directive accepts an optional alias:
+- **Bare name** (`//@decorate logged`) — resolves to a decorator in the same
+  package.
+- **Qualified name** (`//@decorate mw.Logged`) — a decorator from another
+  package. Tell `deco` where it lives with a one-time directive:
 
-```go
-//deco:import "github.com/you/middleware"          // selector: middleware
-//deco:import mw "github.com/you/middleware"        // selector: mw
-```
+  ```go
+  //deco:import "github.com/you/mw"
 
-A qualified decorator with no matching directive is a clear `file:line` error.
-(Bare same-package decorators need no directive — that's still the lightest
-option, and is what you'll use for decorators you define locally.)
+  //@decorate mw.Logged
+  //@decorate mw.RequireRole("admin")
+  func Handler(w http.ResponseWriter, r *http.Request) { ... }
+  ```
 
-### The bottom-up ordering rule
+Then `deco run .` (or `build` / `generate`). That's it — callers of `Add` or
+`Handler` now go through the decorators.
 
-Multiple decorators **stack**, and they apply **bottom-up**: the **topmost**
-annotation becomes the **outermost** wrapper. For
-
-```go
-//@decorate logged
-//@decorate timing("slow")
-func Add(a, b int) int { return a + b }
-```
-
-the generated chain is:
-
-```go
-logged(timing("slow", addImpl))
-```
-
-`logged` (topmost) is outermost, so at runtime it logs *around* `timing`, which
-in turn times *around* the real implementation. You can see this in the example
-output: `[log] ->`, then `[time] … took …`, then `[log] <-`.
-
----
-
-## How the transpiler works (Strategy A: rename-and-wrap)
-
-1. Walk every package directory at or under the target (recursively, like
-   `go build ./...`, skipping `vendor`/`testdata`/hidden dirs) and parse each
-   file with `go/parser` + `parser.ParseComments` so doc comments survive in the
-   AST. Each directory is analysed as its own package.
-2. For each `*ast.FuncDecl`, scan its doc group for `//@decorate …` lines,
-   collected in source order.
-3. Read the **full** `*ast.FuncType` — all params (named, unnamed, grouped,
-   variadic) and all results (zero, one, or many) — so the work is correct for
-   **any** signature, not one shape.
-4. **Rename** the original function in place to an unexported `<name>Impl`
-   (`Add` → `addImpl`) using a precise *text* edit (the rest of the file, including
-   your comments and formatting, is preserved byte-for-byte). A
-   `//deco:wrapper <OriginalName>` marker is stamped above it so re-runs are
-   idempotent and the public name is never lost.
-5. **Generate**, into `<file>_gen.go`, a package-level variable holding the
-   decorator chain (built once at init) plus a fully type-safe wrapper with the
-   original name and identical signature that calls it — formatted with
-   `go/format` and carrying the
-   `// Code generated by deco; DO NOT EDIT.` header. Parameters are
-   forwarded by name (synthesised when the original omitted them), variadics are
-   spread with `...`, and all results are returned.
-
-### Two modes: on-disk vs. shadow overlay (keeping generated code out of source)
-
-The generated wrapper and the renamed implementation are part of the **same Go
-package** — `func Add` (the wrapper) calls `func addImpl` (the renamed
-original), and they must compile together. A Go package is defined by a single
-directory, so the two halves have to reach the compiler **as one package**.
-There are two ways to make that happen, and `deco` supports both:
-
-- **`deco generate` — on-disk.** Renames originals in place and writes
-  `<file>_gen.go` beside them. The generated `.go` lands in the package
-  directory (named `*_gen.go`, the standard convention for machine-made source,
-  à la `stringer`/`mockgen`/`*.pb.go`). Use this when you want the wrappers
-  committed and visible to gopls.
-
-- **`deco build` / `deco run` — shadow overlay.** Uses Go's
-  [`-overlay`](https://pkg.go.dev/cmd/go#hdr-Build_modes) build flag. The
-  renamed original and the wrapper are produced in a **temp directory** and
-  injected into the build via an overlay JSON that maps each real package path
-  to its shadow content. **Your `.go` files are never modified and no `_gen.go`
-  is left in the package directory** — the decoration exists only for the
-  duration of that build. This is why the generated code does *not* have to be
-  "part of the actual code": the overlay lets it be part of the *compilation*
-  without being part of the *source tree*.
-
-So `bin/` (for the compiled executable) was never the right home for generated
-`.go`; the real question is on-disk vs. overlay, and overlay is the answer when
-you want a pristine tree.
-
-> Trade-off: an overlay only affects the build `deco` itself launches. A plain
-> `go build` or gopls (which don't know about the overlay) see the *original,
-> undecorated* function — which is exactly the "annotations are inert until the
-> tool runs" guarantee. Use `deco generate` if you want the decoration visible
-> to every toolchain invocation.
-
-### Edge cases handled
-
-| Case | Handling |
-|------|----------|
-| Multiple return values | Reproduced and forwarded via `return chain(args…)` |
-| No return value | Wrapper just calls the chain, no `return` |
-| Variadic `...T` | Signature preserved; forwarded with `name...` (decorators use `reflect.CallSlice`) |
-| Unnamed / grouped params | Names synthesised (`p0`, `p1`, …) so they can be forwarded |
-| Methods with receivers | **Rejected** in v1 with a clear `file:line` error |
-| Decorator not found | Error with `file:line` |
-| Decorator wrong arity | Error with `file:line` (params must equal leading args + 1) |
-| Qualified decorator, no `//deco:import` | Error with `file:line` and the directive to add |
-
-**v1 scope:** plain functions only. Methods are detected and refused rather than
-silently mishandled.
-
----
-
-## CLI
-
-```
-deco generate [dir]   # on-disk: rename originals + write <file>_gen.go
-deco build    [dir]   # overlay (source untouched): go build -overlay … ./...
-deco run      [dir]   # overlay (source untouched): go run  -overlay … .
-```
-
-`deco` always works on a whole **package directory** (so decorator references
-and sibling files are visible). Like `go run`, the argument may be either a
-directory **or** a `.go` file — a file simply resolves to its containing
-directory. `dir` defaults to `.`. Commands stream stdout/stderr and exit
-non-zero on failure.
+## Examples
 
 ```sh
-go build -o deco .
-deco run ./example            # ✅ a directory
-deco run ./example/main.go    # ✅ a file → resolves to ./example
+deco run ./example          # three different signatures, each decorated
+deco run ./examples/router  # multi-package HTTP router; the router itself is a decorator
 ```
 
----
+`./examples/router` shows the Flask `@app.route` pattern — annotating a handler
+with `//@decorate routing.Route("GET", "/users")` registers it.
 
-## Workflow
+## Notes
 
-1. Write ordinary Go and annotate functions with `//@decorate …`. Because the
-   annotations are just comments, **plain `go build` and gopls keep working**
-   the whole time — before you ever run the tool, the function is defined
-   normally.
-2. Either:
-   - `deco run .` / `deco build .` to run/build the decorated program with a
-     **pristine source tree** (overlay), or
-   - `deco generate .` to **materialise** the renamed originals + `*_gen.go`
-     wrappers on disk.
-3. Calls to the original names now flow through the decorator chain.
-
-Re-running is **idempotent**: already-renamed functions (recognised by their
-`//deco:wrapper` marker) are not renamed again, and output is
-deterministic (files and declarations are processed in stable order).
-
-> Note: if your editor runs `gofmt` on save it may rewrite `//@decorate` to
-> `// @decorate` (gofmt spaces non-directive comments). `deco` accepts
-> both forms, so this is harmless.
-
----
-
-## Example
-
-`./example` contains three functions of **different** signatures, each decorated,
-plus a `main.go` that calls them — and it exercises both ways to reference a
-decorator:
-
-- `Add(a, b int) int` — **qualified** library decorators:
-  `//@decorate decorators.Logged` + `//@decorate decorators.Timing("slow")`,
-  resolved by a `//deco:import "github.com/paulmanoni/deco/decorators"` directive.
-- `Greet(name string)` — no return — a **custom, same-package** decorator
-  `//@decorate audited`, defined in `example/decorators.go` with
-  `decorators.Func` (no reflection).
-- `MinMax(nums ...int) (int, int)` — variadic **and** multiple returns —
-  qualified `//@decorate decorators.Logged` + `//@decorate decorators.Timing("minmax")`.
-
-Run it:
-
-```
-go build -o deco .
-./deco run ./example
-```
-
-Expected output (durations vary):
-
-```
-== Add (func(int, int) int) ==
-[log] -> calling func(int, int) int
-[time] slow took 90µs
-[log] <- returned from func(int, int) int
-Add(2, 3) = 5
-
-== Greet (func(string)) ==
-[audit] start
-Hello, world!
-[audit] done
-
-== MinMax (func(...int) (int, int)) ==
-[log] -> calling func(...int) (int, int)
-[time] minmax took 1µs
-[log] <- returned from func(...int) (int, int)
-MinMax(3,1,4,1,5,9,2,6) = lo:1 hi:9
-```
-
-The interleaved `[log]`/`[time]`/`[audit]` lines prove the decorator chain ran
-around each call, across all three signatures.
-
-### Decorators run once, at init
-
-Each decorator chain is built **once**, in a package-level variable in the
-generated file, rather than on every call:
-
-```go
-var usersImplDecorated = routing.Route("GET", "/users", middleware.Logged(usersImpl))
-func Users(w http.ResponseWriter, r *http.Request) { usersImplDecorated(w, r) }
-```
-
-This matches Python's "decorator applied once" semantics, builds the reflection
-wrappers only once, and — crucially — lets a decorator run **construction-time
-side effects at startup**, such as registering a route.
-
-### Multi-package example: `./examples/router`
-
-`deco` processes a whole package **tree**, not just one directory, so it works
-on real multi-folder projects. `./examples/router` is a tiny HTTP router split
-across four packages:
-
-```
-examples/router/
-  main.go            # package main — just imports handlers (for registration)
-                     #   and serves routing.Mux(); no manual route wiring
-  handlers/          # net/http handlers, decorated across packages
-  middleware/        # Logged / RequireRole decorators (built on decorators.Func)
-  routing/           # the router itself, exposed AS a decorator: routing.Route
-```
-
-The headline trick: **the router is a decorator**. A handler is wired up purely
-by annotating it — the Flask `@app.route` pattern:
-
-```go
-//deco:import "github.com/paulmanoni/deco/examples/router/middleware"
-//deco:import "github.com/paulmanoni/deco/examples/router/routing"
-
-//@decorate routing.Route("GET", "/users")   // topmost → outermost → registers
-//@decorate middleware.Logged
-//@decorate middleware.RequireRole("admin")
-func Users(w http.ResponseWriter, r *http.Request) { ... }
-```
-
-Because the chain is built at init, `routing.Route(...)` runs at startup and
-registers the *fully decorated* handler (it's outermost, so it wraps
-`Logged(RequireRole(impl))` and returns it unchanged). `main` never wires a
-route by hand — importing `handlers` is enough; it just serves `routing.Mux()`.
-`deco` injects the `middleware`, `routing` **and** `net/http` imports (the last
-needed by the reproduced handler signature) into `handlers_gen.go`.
-
-```sh
-deco run examples/router
-# GET /health → [mw] log …            → 200 ok
-# GET /users  → [mw] log + auth …     → 200 users: alice, bob
-```
-
----
-
-## Layout
-
-```
-deco/
-  main.go                       # CLI (cobra): generate / build / run
-  internal/transpiler/          # the transpiler (parse → rename → generate)
-  decorators/decorators.go      # reusable decorators + the Func helper
-  example/                      # three differently-typed decorated funcs + main
-  examples/router/              # multi-folder example: main + handlers + middleware + routing
-```
-
-## Implementation notes
-
-The transpiler core is **standard library only** — `go/parser`, `go/ast`,
-`go/token`, `go/format`, `go/printer`, `text/template`, `os/exec`,
-`encoding/json` (for the overlay file); `reflect` appears **only** inside the
-example decorators.
-
-The CLI is built on [`spf13/cobra`](https://github.com/spf13/cobra) for command
-parsing, help, and shell completion. (The transpilation logic in
-`internal/transpiler` has no third-party dependencies.)
+- Decorators are applied once, at package init (like Python's `fn = a(b(fn))`).
+- Methods (functions with receivers) are not supported in v1.
+- Decorators built with `decorators.Func` wrap the call but don't expose the
+  arguments/return values; for those, write the `reflect`-based form directly.
