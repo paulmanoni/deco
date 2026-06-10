@@ -24,7 +24,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/paulmanoni/deco/internal/transpiler"
+	"github.com/paulmanoni/deco/transpiler"
 )
 
 func main() {

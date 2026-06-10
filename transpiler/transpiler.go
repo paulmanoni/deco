@@ -21,6 +21,28 @@
 //
 // Only plain functions are supported in v1; methods (with receivers) are
 // detected and rejected with a clear file:line error.
+//
+// # Using it as a library
+//
+// The same engine the `deco` CLI uses is exported here, so you can run the
+// transpiler from your own Go programs or tooling — no CLI required:
+//
+//	import "github.com/paulmanoni/deco/transpiler"
+//
+//	// Write <file>_gen.go wrappers across the package tree under dir:
+//	if err := transpiler.Generate("./mypkg"); err != nil { ... }
+//
+//	// Or get the generated content in memory, without touching disk:
+//	outs, err := transpiler.Transform("./mypkg")
+//	for _, o := range outs { fmt.Println(o.Path, len(o.Content)) }
+//
+//	// Or build an overlay for `go build -overlay` (source left untouched):
+//	overlay, cleanup, err := transpiler.Overlay("./mypkg")
+//	defer cleanup()
+//
+// A common pattern is a go:generate directive that needs no installed binary:
+//
+//	//go:generate go run github.com/paulmanoni/deco generate .
 package transpiler
 
 import (
@@ -86,10 +108,19 @@ type job struct {
 
 // Output is one file's worth of generated content, keyed by the absolute path
 // it represents inside the package: either a transformed (renamed) original or
-// a generated <file>_gen.go wrapper.
+// a generated <file>_gen.go wrapper. Returned by [Transform].
 type Output struct {
 	Path    string // absolute path this content stands in for
 	Content []byte
+}
+
+// Transform analyses the whole package tree under dir and returns the generated
+// file contents in memory — the transformed (renamed) originals and the
+// <file>_gen.go wrappers — without writing anything to disk. Use it when you
+// want to inspect or post-process the output yourself; use [Generate] to write
+// the files, or [Overlay] to feed them to `go build -overlay`.
+func Transform(dir string) ([]Output, error) {
+	return transformTree(dir)
 }
 
 // analysis is the parsed, validated view of a package directory.

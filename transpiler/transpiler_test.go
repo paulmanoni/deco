@@ -136,6 +136,49 @@ func Sum(nums ...int) int { return 0 }
 	}
 }
 
+// TestRecursiveCallReentersWrapper pins the (intended) behaviour that a
+// recursive decorated function re-enters the decorator chain on each self-call:
+// only the declaration is renamed, so the inner self-call keeps the original
+// name and resolves to the wrapper — never the impl. This matches Python's
+// semantics (the name binds to the decorated function).
+func TestRecursiveCallReentersWrapper(t *testing.T) {
+	dir := t.TempDir()
+	src := `package p
+
+func logged[F any](fn F) F { return fn }
+
+//@decorate logged
+func Fact(n int) int {
+	if n <= 1 {
+		return 1
+	}
+	return n * Fact(n-1)
+}
+`
+	writeFile(t, filepath.Join(dir, "code.go"), src)
+	if err := Generate(dir); err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	orig := readFile(t, filepath.Join(dir, "code.go"))
+	gen := readFile(t, filepath.Join(dir, "code_gen.go"))
+
+	// The declaration is renamed...
+	if !strings.Contains(orig, "func factImpl(n int) int") {
+		t.Errorf("declaration not renamed:\n%s", orig)
+	}
+	// ...but the recursive self-call is NOT — it still names Fact, so it
+	// re-enters the wrapper rather than calling factImpl directly.
+	if !strings.Contains(orig, "Fact(n-1)") {
+		t.Errorf("recursive self-call should remain Fact(n-1):\n%s", orig)
+	}
+	if strings.Contains(orig, "factImpl(n-1)") {
+		t.Errorf("recursive self-call must NOT be rewritten to the impl:\n%s", orig)
+	}
+	if !strings.Contains(gen, "func Fact(n int) int") {
+		t.Errorf("generated wrapper missing func Fact:\n%s", gen)
+	}
+}
+
 func writeFile(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {

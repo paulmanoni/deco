@@ -191,6 +191,43 @@ GET /users  (X-Role: admin) → [mw] auth: allow  → 200 users: alice, bob
 Without the header the handler never runs; `RequireRole` short-circuits with a
 403. With it, the request flows through to the handler.
 
+## Use it as a library (no CLI)
+
+The transpiler is also a package, so you can run it from your own Go code or
+tooling:
+
+```go
+import "github.com/paulmanoni/deco/transpiler"
+
+transpiler.Generate("./mypkg")    // write <file>_gen.go across the tree
+transpiler.Transform("./mypkg")   // []Output (path + content) in memory, no writes
+transpiler.Overlay("./mypkg")     // overlay JSON for `go build -overlay`
+```
+
+Or wire it into `go generate` without installing the binary:
+
+```go
+//go:generate go run github.com/paulmanoni/deco generate .
+```
+
+## Performance
+
+Decorators are reflection-based, so a decorated call costs more than a direct
+one. Indicative numbers (Apple M-series, `go test -bench`):
+
+| call | ns/op | allocs/op |
+|------|------:|----------:|
+| raw function | ~2 | 0 |
+| one `Func` layer | ~310 | 7 |
+| three stacked layers | ~970 | 21 |
+| `FuncValues` (args/results boxed) | ~385 | 10 |
+
+That's negligible for I/O-bound work (HTTP handlers, etc.). The one case to
+watch is **hot recursion**: a recursive decorated function re-enters the chain
+on every self-call (Python's behavior), so `Fact(20)` goes from ~16ns to
+~6.7µs. Decorate the entry point, not a hot recursive helper. Run the
+benchmarks with `go test -bench . ./decorators/`.
+
 ## Notes
 
 - Decorators are applied once, at package init (like Python's `fn = a(b(fn))`).
