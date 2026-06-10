@@ -1,10 +1,10 @@
 package main
 
-// MinMax is variadic (...int) AND returns MULTIPLE values (int, int),
-// exercising both the variadic-forwarding and multi-return paths at once.
+// MinMax is variadic AND returns multiple values, decorated with qualified
+// library decorators (resolved via the //deco:import directive in math.go).
 //
-//@decorate logged
-//@decorate timing("minmax")
+//@decorate decorators.Logged
+//@decorate decorators.Timing("minmax")
 func MinMax(nums ...int) (int, int) {
 	if len(nums) == 0 {
 		return 0, 0

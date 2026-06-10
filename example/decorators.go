@@ -1,16 +1,17 @@
 package main
 
-import "github.com/paulmanoni/deco/decorators"
+import (
+	"fmt"
 
-// These thin, same-package aliases let annotations reference decorators by a
-// bare name (//@decorate logged) while the real, reflection-based
-// implementations live in the reusable deco/decorators library.
-//
-// Because the generated wrappers live in this same package, they can call
-// `logged` / `timing` directly with no extra imports — which keeps the
-// generated files dead simple. The type parameter F flows straight through to
-// the library, so the wrappers stay fully type-safe for any signature.
+	"github.com/paulmanoni/deco/decorators"
+)
 
-func logged[F any](fn F) F { return decorators.Logged(fn) }
-
-func timing[F any](label string, fn F) F { return decorators.Timing(label, fn) }
+// audited is a CUSTOM decorator, written with decorators.Func — no reflection.
+// It is referenced by its bare, same-package name: //@decorate audited.
+func audited[F any](fn F) F {
+	return decorators.Func(fn, func(proceed func()) {
+		fmt.Println("[audit] start")
+		proceed()
+		fmt.Println("[audit] done")
+	})
+}

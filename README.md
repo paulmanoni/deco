@@ -88,10 +88,39 @@ rewrite arguments/results, drop down to the `reflect`-based form directly.
 
 Decorators are doc comments directly above a function:
 
-- Bare name: `//@decorate logged`
+- Bare name: `//@decorate logged` — resolves to a function in the same package.
 - With args:  `//@decorate timing("slow")` — args are passed **before** the
   wrapped function, matching the `func timing[F any](label string, fn F) F`
   contract.
+- Qualified name: `//@decorate decorators.Logged` — refers to a decorator in
+  another package (see `//deco:import` just below).
+
+### Qualified decorators and `//deco:import`
+
+To use a decorator from another package directly (no same-package alias), tell
+`deco` where it lives with a package-wide `//deco:import` directive, then refer
+to it by its qualified name:
+
+```go
+//deco:import "github.com/paulmanoni/deco/decorators"
+
+//@decorate decorators.Logged
+//@decorate decorators.Timing("slow")
+func Add(a, b int) int { return a + b }
+```
+
+`deco` injects the needed `import` into the generated `<file>_gen.go` (only when
+that file actually uses the selector, so there's never an unused import). The
+directive accepts an optional alias:
+
+```go
+//deco:import "github.com/you/middleware"          // selector: middleware
+//deco:import mw "github.com/you/middleware"        // selector: mw
+```
+
+A qualified decorator with no matching directive is a clear `file:line` error.
+(Bare same-package decorators need no directive — that's still the lightest
+option, and is what you'll use for decorators you define locally.)
 
 ### The bottom-up ordering rule
 
@@ -118,8 +147,10 @@ output: `[log] ->`, then `[time] … took …`, then `[log] <-`.
 
 ## How the transpiler works (Strategy A: rename-and-wrap)
 
-1. Walk every non-generated `.go` file in the target directory and parse it with
-   `go/parser` + `parser.ParseComments` so doc comments survive in the AST.
+1. Walk every package directory at or under the target (recursively, like
+   `go build ./...`, skipping `vendor`/`testdata`/hidden dirs) and parse each
+   file with `go/parser` + `parser.ParseComments` so doc comments survive in the
+   AST. Each directory is analysed as its own package.
 2. For each `*ast.FuncDecl`, scan its doc group for `//@decorate …` lines,
    collected in source order.
 3. Read the **full** `*ast.FuncType` — all params (named, unnamed, grouped,
@@ -181,6 +212,7 @@ you want a pristine tree.
 | Methods with receivers | **Rejected** in v1 with a clear `file:line` error |
 | Decorator not found | Error with `file:line` |
 | Decorator wrong arity | Error with `file:line` (params must equal leading args + 1) |
+| Qualified decorator, no `//deco:import` | Error with `file:line` and the directive to add |
 
 **v1 scope:** plain functions only. Methods are detected and refused rather than
 silently mishandled.
@@ -235,16 +267,17 @@ deterministic (files and declarations are processed in stable order).
 ## Example
 
 `./example` contains three functions of **different** signatures, each decorated,
-plus a `main.go` that calls them:
+plus a `main.go` that calls them — and it exercises both ways to reference a
+decorator:
 
-- `Add(a, b int) int` — `//@decorate logged` + `//@decorate timing("slow")`
-- `Greet(name string)` — no return — `//@decorate logged`
+- `Add(a, b int) int` — **qualified** library decorators:
+  `//@decorate decorators.Logged` + `//@decorate decorators.Timing("slow")`,
+  resolved by a `//deco:import "github.com/paulmanoni/deco/decorators"` directive.
+- `Greet(name string)` — no return — a **custom, same-package** decorator
+  `//@decorate audited`, defined in `example/decorators.go` with
+  `decorators.Func` (no reflection).
 - `MinMax(nums ...int) (int, int)` — variadic **and** multiple returns —
-  `//@decorate logged` + `//@decorate timing("minmax")`
-
-`example/decorators.go` defines thin, same-package aliases (`logged`, `timing`)
-that delegate to the reusable `github.com/paulmanoni/deco/decorators` library, which lets the
-annotations use bare names while keeping the generated files import-free.
+  qualified `//@decorate decorators.Logged` + `//@decorate decorators.Timing("minmax")`.
 
 Run it:
 
@@ -263,9 +296,9 @@ Expected output (durations vary):
 Add(2, 3) = 5
 
 == Greet (func(string)) ==
-[log] -> calling func(string)
+[audit] start
 Hello, world!
-[log] <- returned from func(string)
+[audit] done
 
 == MinMax (func(...int) (int, int)) ==
 [log] -> calling func(...int) (int, int)
@@ -274,8 +307,35 @@ Hello, world!
 MinMax(3,1,4,1,5,9,2,6) = lo:1 hi:9
 ```
 
-The interleaved `[log]`/`[time]` lines prove the decorator chain ran around each
-call, across all three signatures.
+The interleaved `[log]`/`[time]`/`[audit]` lines prove the decorator chain ran
+around each call, across all three signatures.
+
+### Multi-package example: `./examples/router`
+
+`deco` processes a whole package **tree**, not just one directory, so it works
+on real multi-folder projects. `./examples/router` is a tiny HTTP router split
+across three packages:
+
+```
+examples/router/
+  main.go            # package main — registers handlers on an http.ServeMux,
+                     #   drives a couple of httptest requests
+  handlers/          # net/http handlers, decorated with CROSS-PACKAGE middleware
+  middleware/        # Logged / RequireRole decorators (built on decorators.Func)
+```
+
+`handlers` decorates `func(http.ResponseWriter, *http.Request)` handlers with
+`//@decorate middleware.Logged` etc. (qualified, via a `//deco:import`
+directive), and `main` calls `handlers.Users`/`handlers.Health` by their
+original names. `deco` injects both the `middleware` import **and** the
+`net/http` import (needed by the reproduced handler signature) into the
+generated `handlers_gen.go`.
+
+```sh
+deco run examples/router
+# GET /health → [mw] log …            → 200 ok
+# GET /users  → [mw] log + auth …     → 200 users: alice, bob
+```
 
 ---
 
@@ -283,10 +343,11 @@ call, across all three signatures.
 
 ```
 deco/
-  main.go                       # CLI: generate / build / run
+  main.go                       # CLI (cobra): generate / build / run
   internal/transpiler/          # the transpiler (parse → rename → generate)
-  decorators/decorators.go      # reusable reflection-based example decorators
+  decorators/decorators.go      # reusable decorators + the Func helper
   example/                      # three differently-typed decorated funcs + main
+  examples/router/              # multi-folder example: router + handlers + middleware
 ```
 
 ## Implementation notes
