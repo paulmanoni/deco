@@ -47,6 +47,24 @@ func BenchmarkFuncValues(b *testing.B) {
 	}
 }
 
+// loggedConcrete is a reflection-free decorator specialised to ONE signature.
+// deco happily uses decorators like this — they're the zero-overhead escape
+// hatch for hot paths, at the cost of generality (one per signature shape).
+func loggedConcrete(fn func(int, int) int) func(int, int) int {
+	return func(a, b int) int {
+		return fn(a, b) // a real one would log/time around this call
+	}
+}
+
+// BenchmarkConcrete shows a hand-written typed decorator costs about the same
+// as a raw call — no reflection, no allocations.
+func BenchmarkConcrete(b *testing.B) {
+	f := loggedConcrete(add)
+	for b.Loop() {
+		sink = f(1, 2)
+	}
+}
+
 // --- Recursion: re-entering the decorator chain on each self-call ---
 //
 // This mirrors exactly what the transpiler generates: the impl calls the

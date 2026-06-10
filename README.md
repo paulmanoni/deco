@@ -218,21 +218,37 @@ Full API docs: [pkg.go.dev/github.com/paulmanoni/deco](https://pkg.go.dev/github
 
 ## Performance
 
-Decorators are reflection-based, so a decorated call costs more than a direct
-one. Indicative numbers (Apple M-series, `go test -bench`):
+`decorators.Func`/`FuncValues` are signature-agnostic via reflection, so a
+decorated call costs more than a direct one. Indicative numbers (Apple M-series,
+`go test -bench . ./decorators/`):
 
-| call | ns/op | allocs/op |
-|------|------:|----------:|
-| raw function | ~2 | 0 |
+| decorator | ns/op | allocs/op |
+|-----------|------:|----------:|
+| raw function (none) | ~2 | 0 |
+| **concrete, typed decorator** | **~2** | **0** |
 | one `Func` layer | ~310 | 7 |
-| three stacked layers | ~970 | 21 |
+| three stacked `Func` layers | ~970 | 21 |
 | `FuncValues` (args/results boxed) | ~385 | 10 |
 
-That's negligible for I/O-bound work (HTTP handlers, etc.). The one case to
-watch is **hot recursion**: a recursive decorated function re-enters the chain
-on every self-call (Python's behavior), so `Fact(20)` goes from ~16ns to
-~6.7µs. Decorate the entry point, not a hot recursive helper. Run the
-benchmarks with `go test -bench . ./decorators/`.
+For I/O-bound work (HTTP handlers, etc.) the reflection cost is negligible.
+
+**Want it faster?** deco generates plain Go and calls whatever decorator you
+name — it doesn't *require* reflection. For a hot path, write a decorator
+specialised to the function's signature instead of using `decorators.Func`:
+
+```go
+// reflection-free → ~2 ns/op, 0 allocs (same as a raw call)
+func logged(fn func(int, int) int) func(int, int) int {
+	return func(a, b int) int { log.Print("call"); return fn(a, b) }
+}
+```
+
+The generated wrapper calls it directly, so there's no runtime reflection. The
+trade-off is generality: a typed decorator works for one signature shape, while
+`Func` works for all. Other levers: keep chains shallow, and decorate coarse
+entry points — a recursive decorated function re-enters the chain on every
+self-call (`Fact(20)`: ~16ns → ~6.7µs), so don't decorate a hot recursive
+helper.
 
 ## Notes
 
