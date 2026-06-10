@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/banner.svg" alt="deco — Python-style decorators for Go" width="820">
+</p>
+
 # deco
 
 Python-style decorators for Go, via code generation. Annotate any function with
