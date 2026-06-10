@@ -4,6 +4,16 @@ All notable changes to **deco** are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.8.0] - 2026-06-10
+
+### Added
+
+- Configurable annotation keyword. Library: `transpiler.WithAnnotation("@wrap")`
+  passed to `Generate`/`Transform`/`Overlay`. CLI: a `--annotation` flag on every
+  command (default `@decorate`). The internal `//deco:wrapper` / `//deco:import`
+  directives are unchanged.
+- `TestCustomAnnotation`.
+
 ## [0.7.1] - 2026-06-10
 
 ### Added
@@ -112,6 +122,7 @@ All notable changes to **deco** are documented here. The format is based on
 - Clear `file:line` errors for unknown / wrong-arity decorators and methods.
 - Three-signature example; installable with `go install`.
 
+[0.8.0]: https://github.com/paulmanoni/deco/releases/tag/v0.8.0
 [0.7.1]: https://github.com/paulmanoni/deco/releases/tag/v0.7.1
 [0.7.0]: https://github.com/paulmanoni/deco/releases/tag/v0.7.0
 [0.6.0]: https://github.com/paulmanoni/deco/releases/tag/v0.6.0
