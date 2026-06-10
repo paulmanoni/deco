@@ -47,9 +47,42 @@ func logged[F any](fn F) F                 { ... }
 func timing[F any](label string, fn F) F   { ... }
 ```
 
-The shipped library (`github.com/paulmanoni/deco/decorators`) provides two reflection-based
-example decorators, `Logged` and `Timing`, that work for **any** signature.
-`reflect` is used *only* inside these example decorators.
+The shipped library (`github.com/paulmanoni/deco/decorators`) provides example
+decorators `Logged` and `Timing` that work for **any** signature.
+
+### Writing your own decorator — without reflection
+
+You don't write `reflect` yourself. The library exposes one helper, `Func`,
+that turns ordinary middleware into a signature-preserving decorator. You're
+handed a `proceed()` thunk and decide when to call it:
+
+```go
+func logged[F any](fn F) F {
+	return decorators.Func(fn, func(proceed func()) {
+		fmt.Println("[log] ->")
+		proceed()
+		fmt.Println("[log] <-")
+	})
+}
+
+func timing[F any](label string, fn F) F {
+	return decorators.Func(fn, func(proceed func()) {
+		start := time.Now()
+		proceed()
+		fmt.Printf("[time] %s took %s\n", label, time.Since(start))
+	})
+}
+```
+
+Call `proceed` around your logic (logging/timing/tracing), more than once
+(retry), inside a `recover` (swallow panics), or not at all (short-circuit —
+the call then returns the zero value of each result type). `Func` handles
+variadics and any number of results internally; `reflect` lives only inside it.
+
+The only irreducible boilerplate is the `func name[F any](fn F) F { … }`
+declaration — `deco` needs a *named generic function* to reference from the
+annotation — but its body is plain middleware. For decorators that must read or
+rewrite arguments/results, drop down to the `reflect`-based form directly.
 
 ### Annotation syntax
 
