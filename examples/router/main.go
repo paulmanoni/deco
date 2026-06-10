@@ -1,11 +1,14 @@
 // Command router is a multi-folder deco example: a tiny HTTP router whose
 // handlers (package handlers) are decorated with middleware (package
-// middleware) from another folder.
+// middleware) AND with the router itself (package routing).
 //
-// main registers the handlers by their ORIGINAL names on an http.ServeMux —
-// after deco runs, those names resolve to the generated wrappers, so every
-// request transparently flows through the decorator chain. We drive a couple of
-// in-process requests with httptest so the example runs without binding a port.
+// Note there is no manual route wiring here. Importing the handlers package is
+// enough: each handler's //@decorate routing.Route("GET", "/path") runs at
+// package init (deco builds each decorator chain once), registering the
+// handler — the Flask @app.route pattern. main just asks routing for the mux.
+//
+// We drive a couple of in-process requests with httptest so the example runs
+// without binding a port.
 package main
 
 import (
@@ -13,14 +16,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 
-	"github.com/paulmanoni/deco/examples/router/handlers"
+	_ "github.com/paulmanoni/deco/examples/router/handlers" // import for route registration
+	"github.com/paulmanoni/deco/examples/router/routing"
 )
 
 func main() {
-	mux := http.NewServeMux()
-	// handlers.Users / handlers.Health are the decorated wrappers post-deco.
-	mux.HandleFunc("/users", handlers.Users)
-	mux.HandleFunc("/health", handlers.Health)
+	mux := routing.Mux() // every //@decorate routing.Route(...) is already registered
 
 	for _, path := range []string{"/health", "/users"} {
 		fmt.Printf("GET %s\n", path)

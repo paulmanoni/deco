@@ -701,13 +701,20 @@ import (
 {{end}})
 {{end}}
 {{range .Funcs}}
+// {{.ChainVar}} is {{.WrapperName}}'s decorator chain, built ONCE at package
+// init (like Python's fn = a(b(fn))) — so construction-time side effects such
+// as route registration run at startup, and the reflection wrappers are created
+// only once rather than on every call.
+var {{.ChainVar}} = {{.Chain}}
+
 func {{.WrapperName}}({{.Params}}){{if .Results}} {{.Results}}{{end}} {
-	{{.Ret}}{{.Chain}}({{.CallArgs}})
+	{{.Ret}}{{.ChainVar}}({{.CallArgs}})
 }
 {{end}}`))
 
 type genFunc struct {
 	WrapperName string
+	ChainVar    string // package-level var holding the built chain
 	Params      string
 	Results     string
 	Ret         string // "return " or ""
@@ -731,6 +738,7 @@ func genBytes(srcPath, pkg string, jobs []job, imports []string, fset *token.Fil
 		params, callArgs := renderParams(j.fn, fset)
 		gf := genFunc{
 			WrapperName: j.wrapperName,
+			ChainVar:    j.implName + "Decorated",
 			Params:      params,
 			Results:     renderResults(j.fn, fset),
 			Chain:       buildChain(j),
