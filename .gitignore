@@ -1,0 +1,6 @@
+# Compiled CLI
+/deco
+# Binaries dropped by `deco build`/`go build ./...` for the example main package
+/example/example
+# JetBrains IDE
+.idea/
