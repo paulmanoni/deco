@@ -2,6 +2,10 @@
   <img src="assets/banner.svg" alt="deco — Python-style decorators for Go" width="820">
 </p>
 
+<p align="center">
+  <a href="https://pkg.go.dev/github.com/paulmanoni/deco"><img src="https://pkg.go.dev/badge/github.com/paulmanoni/deco.svg" alt="Go Reference"></a>
+</p>
+
 # deco
 
 Python-style decorators for Go, via code generation. Annotate any function with
@@ -209,6 +213,8 @@ Or wire it into `go generate` without installing the binary:
 ```go
 //go:generate go run github.com/paulmanoni/deco generate .
 ```
+
+Full API docs: [pkg.go.dev/github.com/paulmanoni/deco](https://pkg.go.dev/github.com/paulmanoni/deco).
 
 ## Performance
 
