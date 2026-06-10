@@ -34,6 +34,15 @@ func main() {
 	}
 }
 
+// annotation is the doc-comment keyword that marks a decorator; configurable
+// via the --annotation flag so teams can use //@wrap, //@apply, etc.
+var annotation string
+
+// opts builds the transpiler options from the current flags.
+func opts() []transpiler.Option {
+	return []transpiler.Option{transpiler.WithAnnotation(annotation)}
+}
+
 // rootCmd wires up the cobra command tree.
 func rootCmd() *cobra.Command {
 	root := &cobra.Command{
@@ -45,9 +54,12 @@ func rootCmd() *cobra.Command {
 			"  //@decorate timing(\"slow\")\n" +
 			"  func Add(a, b int) int { return a + b }\n\n" +
 			"deco renames the original and generates a type-matched wrapper with the\n" +
-			"same name, so every caller transparently hits the decorator chain.",
+			"same name, so every caller transparently hits the decorator chain.\n\n" +
+			"Use --annotation to pick a different keyword (default \"@decorate\").",
 		SilenceUsage: true, // don't dump usage on a runtime error
 	}
+	root.PersistentFlags().StringVar(&annotation, "annotation", "@decorate",
+		"doc-comment keyword that marks a decorator, e.g. @decorate or @wrap")
 	root.AddCommand(generateCmd(), buildCmd(), runCmd())
 	return root
 }
@@ -62,7 +74,7 @@ func generateCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if err := transpiler.Generate(dir); err != nil {
+			if err := transpiler.Generate(dir, opts()...); err != nil {
 				return err
 			}
 			fmt.Fprintln(cmd.ErrOrStderr(), "deco: generated wrappers in", dir)
@@ -109,7 +121,7 @@ func overlayExec(cmd, arg, sub string, goArgs ...string) error {
 	if err != nil {
 		return err
 	}
-	overlay, cleanup, err := transpiler.Overlay(dir)
+	overlay, cleanup, err := transpiler.Overlay(dir, opts()...)
 	if err != nil {
 		return err
 	}

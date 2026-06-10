@@ -179,6 +179,38 @@ func Fact(n int) int {
 	}
 }
 
+// TestCustomAnnotation checks WithAnnotation: a custom keyword is honoured, and
+// the default keyword does not match it.
+func TestCustomAnnotation(t *testing.T) {
+	src := `package p
+
+func logged[F any](fn F) F { return fn }
+
+//@wrap logged
+func Add(a, b int) int { return a + b }
+`
+	// With the matching keyword, the wrapper is generated.
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "code.go"), src)
+	if err := Generate(dir, WithAnnotation("@wrap")); err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	gen := readFile(t, filepath.Join(dir, "code_gen.go"))
+	if !strings.Contains(gen, "func Add(a, b int) int") {
+		t.Errorf("custom annotation @wrap not honoured:\n%s", gen)
+	}
+
+	// With the default keyword, //@wrap is just an ordinary comment.
+	dir2 := t.TempDir()
+	writeFile(t, filepath.Join(dir2, "code.go"), src)
+	if err := Generate(dir2); err != nil {
+		t.Fatalf("Generate (default): %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir2, "code_gen.go")); err == nil {
+		t.Error("default @decorate should not match //@wrap, but a wrapper was generated")
+	}
+}
+
 func writeFile(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {

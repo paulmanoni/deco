@@ -45,6 +45,12 @@ deco generate [dir]   # write the generated wrappers to disk instead
 `-overlay`, so your source files are never modified; `generate` writes
 `<file>_gen.go` files next to your code.
 
+Prefer a different keyword to `@decorate`? Pass `--annotation` (on any command):
+
+```sh
+deco run --annotation "@wrap" .   # now recognises //@wrap name
+```
+
 ## Creating a custom decorator
 
 A decorator is a generic function that takes the wrapped function and returns
@@ -205,14 +211,18 @@ deco ships two importable packages. Full reference on
 
 | function | what it does |
 |----------|--------------|
-| `Generate(dir string) error` | rename originals and write `<file>_gen.go` across the package tree |
-| `Transform(dir string) ([]Output, error)` | the same generation, returned in memory — no writes |
-| `Overlay(dir string) (path string, cleanup func(), err error)` | write a `go build -overlay` JSON; source left untouched |
+| `Generate(dir string, opts ...Option) error` | rename originals and write `<file>_gen.go` across the package tree |
+| `Transform(dir string, opts ...Option) ([]Output, error)` | the same generation, returned in memory — no writes |
+| `Overlay(dir string, opts ...Option) (path string, cleanup func(), err error)` | write a `go build -overlay` JSON; source left untouched |
+| `WithAnnotation(keyword string) Option` | use a custom annotation keyword instead of `@decorate` |
 
 ```go
 import "github.com/paulmanoni/deco/transpiler"
 
 if err := transpiler.Generate("./mypkg"); err != nil { ... }
+
+// custom keyword: recognise //@wrap instead of //@decorate
+transpiler.Generate("./mypkg", transpiler.WithAnnotation("@wrap"))
 ```
 
 Or wire it into `go generate` without installing the binary:

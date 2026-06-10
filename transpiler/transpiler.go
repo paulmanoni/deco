@@ -70,17 +70,48 @@ import (
 // directive form, so gofmt leaves it untouched (no space inserted).
 const marker = "//deco:wrapper "
 
-// markerKey / annotationKey are the slash-stripped forms used when scanning doc
-// comments, so we match regardless of any space gofmt inserts after "//".
+// markerKey / defaultAnnotation are the slash-stripped forms used when scanning
+// doc comments, so we match regardless of any space gofmt inserts after "//".
 const (
-	markerKey     = "deco:wrapper"
-	annotationKey = "@decorate"
+	markerKey = "deco:wrapper"
+	// defaultAnnotation is the doc-comment keyword that introduces a decorator
+	// when none is configured: //@decorate name. Override it with WithAnnotation.
+	defaultAnnotation = "@decorate"
 	// importDirectiveKey introduces an import to inject into generated files so
 	// that qualified decorators (pkg.Name) resolve, e.g.
 	//   //deco:import "github.com/you/yourdecorators"
 	//   //deco:import alias "github.com/you/yourdecorators"
 	importDirectiveKey = "deco:import"
 )
+
+// config holds tunable transpiler settings, populated from Options.
+type config struct {
+	annotation string // the slash-stripped keyword that introduces a decorator
+}
+
+// An Option customises how the transpiler reads annotations.
+type Option func(*config)
+
+// WithAnnotation sets the doc-comment keyword that introduces a decorator. The
+// default is "@decorate" (i.e. //@decorate name). Provide the full keyword
+// including any leading "@" you want: WithAnnotation("@wrap") matches
+// //@wrap name, while WithAnnotation("decorate") matches //decorate name. An
+// empty keyword is ignored (the default is kept).
+func WithAnnotation(keyword string) Option {
+	return func(c *config) {
+		if keyword != "" {
+			c.annotation = keyword
+		}
+	}
+}
+
+func newConfig(opts []Option) config {
+	c := config{annotation: defaultAnnotation}
+	for _, o := range opts {
+		o(&c)
+	}
+	return c
+}
 
 // generatedHeader marks files we own; we never scan these for annotations and
 // always overwrite them wholesale.
@@ -119,8 +150,8 @@ type Output struct {
 // <file>_gen.go wrappers — without writing anything to disk. Use it when you
 // want to inspect or post-process the output yourself; use [Generate] to write
 // the files, or [Overlay] to feed them to `go build -overlay`.
-func Transform(dir string) ([]Output, error) {
-	return transformTree(dir)
+func Transform(dir string, opts ...Option) ([]Output, error) {
+	return transformTree(dir, newConfig(opts))
 }
 
 // analysis is the parsed, validated view of a package directory.
@@ -172,7 +203,7 @@ func (r importResolver) resolve(sel string, fileImports map[string]string) (line
 // analyze performs steps 1–4: parse every non-generated .go file, build a
 // package-wide view of declared functions, scan annotations, validate decorator
 // references, and assemble the per-file job lists. It does not touch disk.
-func analyze(dir string) (*analysis, error) {
+func analyze(dir string, cfg config) (*analysis, error) {
 	fset := token.NewFileSet()
 
 	entries, err := os.ReadDir(dir)
@@ -246,7 +277,7 @@ func analyze(dir string) (*analysis, error) {
 			if !ok || fn.Doc == nil {
 				continue
 			}
-			decs, wrapperOverride := parseAnnotations(fn.Doc, fset)
+			decs, wrapperOverride := parseAnnotations(fn.Doc, fset, cfg.annotation)
 			if len(decs) == 0 {
 				continue
 			}
@@ -291,8 +322,8 @@ func analyze(dir string) (*analysis, error) {
 // transformed (renamed) originals plus the generated wrappers. Nothing is
 // written; callers decide whether to materialise the outputs as real files
 // (Generate) or feed them to the build untouched-on-disk (Overlay).
-func transform(dir string) ([]Output, error) {
-	a, err := analyze(dir)
+func transform(dir string, cfg config) ([]Output, error) {
+	a, err := analyze(dir, cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -365,14 +396,14 @@ func packageDirs(root string) ([]string, error) {
 // transformTree runs transform over every package directory at or under root
 // and concatenates the results, so decorators are realised across the whole
 // multi-folder project, not just the top directory.
-func transformTree(root string) ([]Output, error) {
+func transformTree(root string, cfg config) ([]Output, error) {
 	dirs, err := packageDirs(root)
 	if err != nil {
 		return nil, err
 	}
 	var all []Output
 	for _, d := range dirs {
-		outputs, err := transform(d)
+		outputs, err := transform(d, cfg)
 		if err != nil {
 			return nil, err
 		}
@@ -385,8 +416,8 @@ func transformTree(root string) ([]Output, error) {
 // originals in place (stamping the idempotency marker) and writes the
 // <file>_gen.go wrappers next to them. It processes the whole package tree
 // under dir.
-func Generate(dir string) error {
-	outputs, err := transformTree(dir)
+func Generate(dir string, opts ...Option) error {
+	outputs, err := transformTree(dir, newConfig(opts))
 	if err != nil {
 		return err
 	}
@@ -407,8 +438,8 @@ func Generate(dir string) error {
 //
 // cleanup removes the temp directory; callers should defer it. It processes the
 // whole package tree under dir, so every package's decorators are injected.
-func Overlay(dir string) (overlayPath string, cleanup func(), err error) {
-	outputs, err := transformTree(dir)
+func Overlay(dir string, opts ...Option) (overlayPath string, cleanup func(), err error) {
+	outputs, err := transformTree(dir, newConfig(opts))
 	if err != nil {
 		return "", nil, err
 	}
@@ -448,7 +479,7 @@ func Overlay(dir string) (overlayPath string, cleanup func(), err error) {
 // parseAnnotations scans a doc group for //@decorate lines (and the
 // //deco:wrapper marker). It returns the decorators in source order plus
 // the wrapper-name override carried by the marker (empty if absent).
-func parseAnnotations(doc *ast.CommentGroup, fset *token.FileSet) ([]decorator, string) {
+func parseAnnotations(doc *ast.CommentGroup, fset *token.FileSet, annotation string) ([]decorator, string) {
 	var decs []decorator
 	var wrapperOverride string
 	for _, c := range doc.List {
@@ -458,8 +489,8 @@ func parseAnnotations(doc *ast.CommentGroup, fset *token.FileSet) ([]decorator, 
 		switch {
 		case strings.HasPrefix(content, markerKey):
 			wrapperOverride = strings.TrimSpace(strings.TrimPrefix(content, markerKey))
-		case strings.HasPrefix(content, annotationKey):
-			spec := strings.TrimSpace(strings.TrimPrefix(content, annotationKey))
+		case strings.HasPrefix(content, annotation):
+			spec := strings.TrimSpace(strings.TrimPrefix(content, annotation))
 			if spec == "" {
 				continue
 			}
