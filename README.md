@@ -94,21 +94,43 @@ auth middleware that inspects the `*http.Request` — use `decorators.FuncValues
 It exposes args and results as `[]any`:
 
 ```go
+// RequireRole denies the request (403) and skips the handler unless the
+// X-Role header matches. It pulls the ResponseWriter and *http.Request out of
+// the handler's arguments — no matter the exact handler signature.
 func RequireRole[F any](role string, fn F) F {
 	return decorators.FuncValues(fn, func(args []any, proceed func([]any) []any) []any {
+		var w http.ResponseWriter
+		var r *http.Request
 		for _, a := range args {
-			if r, ok := a.(*http.Request); ok && r.Header.Get("X-Role") == role {
-				return proceed(args)        // authorised → run the handler
+			switch v := a.(type) {
+			case http.ResponseWriter:
+				w = v
+			case *http.Request:
+				r = v
 			}
 		}
-		return nil                          // denied → short-circuit (zero results)
+		if r == nil || r.Header.Get("X-Role") != role {
+			if w != nil {
+				w.WriteHeader(http.StatusForbidden)
+				fmt.Fprintf(w, "forbidden: need role %q\n", role)
+			}
+			return nil // short-circuit: the handler never runs
+		}
+		return proceed(args) // authorised → run the handler
 	})
 }
 ```
 
+Use it like any other decorator:
+
+```go
+//@decorate middleware.RequireRole("admin")
+func Users(w http.ResponseWriter, r *http.Request) { ... }
+```
+
 `proceed(args)` runs the wrapped function (pass modified args to rewrite them);
-returning your own values replaces the results. See `./examples/router` for a
-working version that writes a 403.
+returning your own values replaces the results; not calling it short-circuits.
+This is exactly the middleware in `./examples/router`.
 
 ## Using decorators
 
@@ -151,8 +173,19 @@ deco run ./example          # three different signatures, each decorated
 deco run ./examples/router  # multi-package HTTP router; the router itself is a decorator
 ```
 
-`./examples/router` shows the Flask `@app.route` pattern — annotating a handler
-with `//@decorate routing.Route("GET", "/users")` registers it.
+`./examples/router` shows the Flask `@app.route` pattern (annotating a handler
+with `//@decorate routing.Route("GET", "/users")` registers it) **and** the
+request-aware `RequireRole` middleware above:
+
+```
+$ deco run ./examples/router
+GET /health                 → 200 ok
+GET /users                  → [mw] auth: DENY   → 403 forbidden: need role "admin"
+GET /users  (X-Role: admin) → [mw] auth: allow  → 200 users: alice, bob
+```
+
+Without the header the handler never runs; `RequireRole` short-circuits with a
+403. With it, the request flows through to the handler.
 
 ## Notes
 
