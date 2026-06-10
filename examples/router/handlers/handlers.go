@@ -1,8 +1,7 @@
 // Package handlers holds standard net/http handlers, each decorated with
-// middleware from a DIFFERENT package AND with the router itself. This exercises
-// cross-folder decoration: the //deco:import directives tell deco where the
-// `middleware.*` and `routing.*` decorators live, and deco injects those
-// imports into the generated handlers_gen.go.
+// middleware AND with the router itself — from DIFFERENT packages, referenced
+// by qualified names with NO //deco:import directive. deco auto-resolves
+// middleware and routing to their module import paths via `go list`.
 package handlers
 
 import (
@@ -10,12 +9,8 @@ import (
 	"net/http"
 )
 
-//deco:import "github.com/paulmanoni/deco/examples/router/middleware"
-//deco:import "github.com/paulmanoni/deco/examples/router/routing"
-
-// Users is decorated with three stacked decorators across two packages. Per the
-// bottom-up rule the topmost (routing.Route) is OUTERMOST, so Route registers
-// the fully-decorated handler — Route("GET","/users", Logged(RequireRole(impl))).
+// Users stacks three decorators across two packages. Bottom-up: routing.Route
+// (topmost) is outermost, so it registers the fully-decorated handler.
 //
 //@decorate routing.Route("GET", "/users")
 //@decorate middleware.Logged

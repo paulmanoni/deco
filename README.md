@@ -101,14 +101,21 @@ func Add(a, b int) int { return a + b }
 - **Bare name** (`//@decorate logged`) — resolves to a decorator in the same
   package.
 - **Qualified name** (`//@decorate mw.Logged`) — a decorator from another
-  package. Tell `deco` where it lives with a one-time directive:
+  package. deco finds the package automatically (it matches `mw` against your
+  module's packages via `go list`), so this usually just works:
 
   ```go
-  //deco:import "github.com/you/mw"
-
   //@decorate mw.Logged
   //@decorate mw.RequireRole("admin")
   func Handler(w http.ResponseWriter, r *http.Request) { ... }
+  ```
+
+  Add a `//deco:import` directive only when auto-resolution can't decide — an
+  ambiguous package name, or a decorator in an external module that nothing in
+  your code imports:
+
+  ```go
+  //deco:import "github.com/you/mw"           // or: //deco:import alias "github.com/you/mw"
   ```
 
 Then `deco run .` (or `build` / `generate`). That's it — callers of `Add` or

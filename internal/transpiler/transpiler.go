@@ -34,6 +34,7 @@ import (
 	"go/token"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -97,12 +98,44 @@ type analysis struct {
 	srcNames   []string             // sorted, absolute source paths
 	files      map[string]*ast.File // by absolute path
 	jobsByFile map[string][]job     // by absolute path
-	imports    map[string]string    // package selector -> import line, from //deco:import directives
+	resolver   importResolver       // resolves package selectors to import lines
 
 	// fileImports maps each source path to that file's own imports
 	// (selector -> import line), used to re-import types referenced by a
 	// reproduced wrapper signature (e.g. http.ResponseWriter).
 	fileImports map[string]map[string]string
+}
+
+// importResolver maps a package selector (the identifier used in a qualified
+// decorator like `routing` in routing.Route) to the import line the generated
+// file needs. It tries, in order: explicit //deco:import directives, then
+// auto-resolution against the packages of the enclosing module (matched by
+// package name via `go list`). A file's own imports are consulted separately by
+// the caller, since they are per-file rather than package-wide.
+type importResolver struct {
+	directives map[string]string   // selector -> import line, from //deco:import
+	modPkgs    map[string][]string // package name -> import path(s) in the module
+}
+
+// resolve returns the import line for sel, preferring (1) the source file's own
+// imports, (2) //deco:import directives, (3) a unique module package of that
+// name. ambiguous is true when several module packages share the name (the user
+// must disambiguate with //deco:import).
+func (r importResolver) resolve(sel string, fileImports map[string]string) (line string, ok, ambiguous bool) {
+	if l, ok := fileImports[sel]; ok {
+		return l, true, false
+	}
+	if l, ok := r.directives[sel]; ok {
+		return l, true, false
+	}
+	switch paths := r.modPkgs[sel]; len(paths) {
+	case 0:
+		return "", false, false
+	case 1:
+		return strconv.Quote(paths[0]), true, false
+	default:
+		return "", false, true
+	}
 }
 
 // analyze performs steps 1–4: parse every non-generated .go file, build a
@@ -163,6 +196,10 @@ func analyze(dir string) (*analysis, error) {
 		return nil, err
 	}
 
+	// Auto-resolution: enumerate the module's packages by name (via `go list`)
+	// so qualified decorators in the same module need no //deco:import directive.
+	resolver := importResolver{directives: importDirectives, modPkgs: modulePackages(dir)}
+
 	// Each file's own imports, so a wrapper can re-import the packages its
 	// signature types come from.
 	fileImports := make(map[string]map[string]string, len(srcNames))
@@ -189,7 +226,7 @@ func analyze(dir string) (*analysis, error) {
 			}
 
 			for _, d := range decs {
-				if err := validateDecorator(d, funcArity, fileImports[path], importDirectives, pos.Filename); err != nil {
+				if err := validateDecorator(d, funcArity, fileImports[path], resolver, pos.Filename); err != nil {
 					return nil, err
 				}
 			}
@@ -214,7 +251,7 @@ func analyze(dir string) (*analysis, error) {
 		srcNames:    srcNames,
 		files:       files,
 		jobsByFile:  jobsByFile,
-		imports:     importDirectives,
+		resolver:    resolver,
 		fileImports: fileImports,
 	}, nil
 }
@@ -244,7 +281,7 @@ func transform(dir string) ([]Output, error) {
 		}
 		// Generated wrapper, with any imports its decorators and reproduced
 		// signatures need.
-		imports := importsForFile(jobs, a.fileImports[path], a.imports)
+		imports := importsForFile(jobs, a.fileImports[path], a.resolver)
 		gen, err := genBytes(path, a.files[path].Name.Name, jobs, imports, a.fset)
 		if err != nil {
 			return nil, err
@@ -466,20 +503,21 @@ func headSelector(name string) string {
 // generated file can import its package; its arity is not checked, since its
 // declaration lives outside the scanned package. A bare name must resolve to a
 // function in the package, with an arity matching the supplied leading args.
-func validateDecorator(d decorator, funcArity map[string]int, fileImports, directives map[string]string, file string) error {
+func validateDecorator(d decorator, funcArity map[string]int, fileImports map[string]string, resolver importResolver, file string) error {
 	if isQualified(d.name) {
 		sel := headSelector(d.name)
-		// Resolvable if the source file already imports the package, or a
-		// //deco:import directive names it.
-		if _, ok := fileImports[sel]; ok {
+		_, ok, ambiguous := resolver.resolve(sel, fileImports)
+		if ok {
 			return nil
 		}
-		if _, ok := directives[sel]; ok {
-			return nil
+		if ambiguous {
+			return fmt.Errorf("%s:%d: package %q for decorator %q is ambiguous (several module packages share that name); "+
+				"add `//deco:import \"the/exact/path\"` to disambiguate",
+				file, d.line, sel, d.name)
 		}
-		return fmt.Errorf("%s:%d: qualified decorator %q needs an import directive; "+
+		return fmt.Errorf("%s:%d: cannot locate package %q for decorator %q; "+
 			"add `//deco:import \"path/to/%s\"` (or `//deco:import %s \"path/...\"`) to a file in this package",
-			file, d.line, d.name, sel, sel)
+			file, d.line, sel, d.name, sel, sel)
 	}
 	params, ok := funcArity[d.name]
 	if !ok {
@@ -614,7 +652,7 @@ func signatureSelectors(fn *ast.FuncType) []string {
 // file's own imports first, then the package's //deco:import directives. Only
 // referenced selectors are included, so generated files never carry an unused
 // import.
-func importsForFile(jobs []job, fileImports, directives map[string]string) []string {
+func importsForFile(jobs []job, fileImports map[string]string, resolver importResolver) []string {
 	used := map[string]bool{}
 	for _, j := range jobs {
 		for _, d := range j.decorators {
@@ -629,17 +667,66 @@ func importsForFile(jobs []job, fileImports, directives map[string]string) []str
 	seen := map[string]bool{}
 	var lines []string
 	for sel := range used {
-		line, ok := fileImports[sel]
-		if !ok {
-			line, ok = directives[sel]
-		}
-		if ok && !seen[line] {
+		if line, ok, _ := resolver.resolve(sel, fileImports); ok && !seen[line] {
 			seen[line] = true
 			lines = append(lines, line)
 		}
 	}
 	sort.Strings(lines)
 	return lines
+}
+
+// modulePkgCache memoises the package-name -> import-path(s) map per module
+// root, so `go list` runs at most once even when many directories are
+// processed in one invocation.
+var modulePkgCache = map[string]map[string][]string{}
+
+// modulePackages returns the enclosing module's packages keyed by package name,
+// via `go list`. It is best-effort: if the toolchain is unavailable or the
+// directory is outside a module, it returns an empty map and callers fall back
+// to //deco:import. "main" packages are excluded (they can't be imported).
+func modulePackages(dir string) map[string][]string {
+	root := moduleRoot(dir)
+	if root == "" {
+		return nil
+	}
+	if m, ok := modulePkgCache[root]; ok {
+		return m
+	}
+	m := map[string][]string{}
+	modulePkgCache[root] = m // cache up front; an error leaves it empty (no retry)
+
+	// -find skips dependency resolution (fast, and works on not-yet-built code);
+	// -e keeps going past packages that don't load.
+	cmd := exec.Command("go", "list", "-e", "-find", "-f", "{{.Name}}|{{.ImportPath}}", "./...")
+	cmd.Dir = root
+	out, err := cmd.Output()
+	if err != nil {
+		return m
+	}
+	for line := range strings.SplitSeq(strings.TrimSpace(string(out)), "\n") {
+		name, path, ok := strings.Cut(line, "|")
+		if !ok || name == "" || name == "main" || path == "" {
+			continue
+		}
+		m[name] = append(m[name], path)
+	}
+	return m
+}
+
+// moduleRoot returns the directory of the go.mod enclosing dir, or "" if none.
+func moduleRoot(dir string) string {
+	cmd := exec.Command("go", "env", "GOMOD")
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	gomod := strings.TrimSpace(string(out))
+	if gomod == "" || gomod == os.DevNull {
+		return ""
+	}
+	return filepath.Dir(gomod)
 }
 
 // renameBytes returns the source file's bytes with each decorated function
