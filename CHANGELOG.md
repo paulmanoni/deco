@@ -4,6 +4,19 @@ All notable changes to **deco** are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.11.0] - 2026-06-11
+
+### Added
+
+- Source-map remapping now covers **stdout** for `deco test`, not just stderr:
+  test failure messages and panic stack frames in decorated code report the
+  real source position instead of an overlay shadow path or shifted line. The
+  matcher handles positions anywhere in a line (indented failures, tab-indented
+  stack frames); `-json` output is passed through verbatim.
+- `examples/remap-demo`: a runnable nested-module demo (decorated `Div` + a
+  failing test) showing `deco test .` report `calc.go:12` (source) rather than
+  an overlay temp path.
+
 ## [0.10.0] - 2026-06-11
 
 ### Added
@@ -166,6 +179,7 @@ All notable changes to **deco** are documented here. The format is based on
 - Clear `file:line` errors for unknown / wrong-arity decorators and methods.
 - Three-signature example; installable with `go install`.
 
+[0.11.0]: https://github.com/paulmanoni/deco/releases/tag/v0.11.0
 [0.10.0]: https://github.com/paulmanoni/deco/releases/tag/v0.10.0
 [0.9.0]: https://github.com/paulmanoni/deco/releases/tag/v0.9.0
 [0.8.0]: https://github.com/paulmanoni/deco/releases/tag/v0.8.0
