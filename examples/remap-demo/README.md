@@ -1,35 +1,54 @@
 # remap-demo — see source-map remapping
 
 A tiny **separate module** (its own `go.mod`, so the parent's `go test ./...`
-ignores it) with one decorated function whose test fails — so you can watch
-`deco` report the failure at the right line in *this* source file, even though
-it runs against the transpiled overlay.
+ignores it) with two decorated functions, so you can watch `deco` report
+positions at the right line in *this* source file even though it runs against
+the transpiled overlay (where a `//deco:wrapper` marker shifts each body down a
+line).
 
-`Div` is decorated, and a `//deco:wrapper` marker shifts its body down a line in
-the overlay:
+Because it's a separate module, **run the commands from inside this directory**
+(`deco vet ./examples/remap-demo` from the repo root fails — that's plain `go`
+behavior for a nested module):
+
+```sh
+cd examples/remap-demo
+```
+
+### vet finding → remapped on stderr
+
+`Warn` has a `Printf` bug:
 
 ```go
 //@decorate logged
-func Div(a, b int) int {
-	return a / b // line 12 — panics when b == 0
+func Warn(code int) {
+	fmt.Printf("%s\n", code) // %s with an int — flagged on this line
 }
 ```
 
-`calc_test.go` calls `Div(1, 0)`, which panics. Run it two ways:
-
 ```sh
-go test .     # pristine:        .../examples/remap-demo/calc.go:12
-deco test .   # overlay + remap: calc.go:12          ← same line, no temp path
+deco vet .    # reports calc.go:21 — the real line, not deco-overlay-*/0_calc.go:22
 ```
 
-`deco` compiled and ran the *transpiled* code (where `Div` is renamed and the
-marker shifts the body to line 13), yet the panic stack still points at
-**`calc.go:12`** — your real source line — not a `deco-overlay-*/0_calc.go:13`
-shadow path. That rewrite is deco's source map at work (it remaps the child's
-stderr *and* the test-failure/stack positions on stdout).
+### test failure / panic → remapped on stdout
 
-Both runs exit non-zero (the test is meant to fail); `deco` mirrors `go`'s exit
-code exactly.
+`Div` panics on divide-by-zero, and `calc_test.go` calls `Div(1, 0)`. The vet
+bug above would otherwise stop `go test` before the test runs, so skip vet:
 
-> Try `deco vet .` too — vet diagnostics in decorated functions are remapped the
-> same way.
+```sh
+deco test -vet=off .    # the panic stack points at calc.go:16, not the overlay path
+```
+
+### compare with bare go
+
+```sh
+go vet .                # .../calc.go:21
+deco vet .              # calc.go:21        (same line, no temp path)
+
+go test -vet=off .      # .../calc.go:16 in the stack
+deco test -vet=off .    # calc.go:16        (same line, no temp path)
+```
+
+deco compiled and ran the *transpiled* code, yet every reported position maps
+back to your source. (Positions in fully generated wrappers, `*_gen.go`, have no
+source equivalent — deco shows the logical `*_gen.go` path and prints a note.)
+Exit codes mirror `go` exactly.
