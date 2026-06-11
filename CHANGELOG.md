@@ -4,6 +4,25 @@ All notable changes to **deco** are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.10.0] - 2026-06-11
+
+### Added
+
+- Source-map remapping of toolchain diagnostics. `deco vet`/`build`/`test` now
+  rewrite positions reported against the transpiled overlay back to the user's
+  source — a finding inside a decorated function reports the same `file:line` as
+  bare `go vet`, not an overlay temp path or a shifted line. Diagnostics in
+  generated wrappers (`*_gen.go`, which have no source equivalent) show the
+  logical path and a note.
+- `transpiler.OverlayWithSourceMap` returns a `SourceMap` (line shifts +
+  shadow→logical paths) alongside the overlay; `Overlay` is unchanged.
+  `transpiler.NewSourceMap` and `SourceMap.Remap` are exported for tooling.
+
+### Known limitations
+
+- Only the child's stderr is remapped; positions that test failures print to
+  stdout are not.
+
 ## [0.9.0] - 2026-06-11
 
 ### Added
@@ -147,6 +166,7 @@ All notable changes to **deco** are documented here. The format is based on
 - Clear `file:line` errors for unknown / wrong-arity decorators and methods.
 - Three-signature example; installable with `go install`.
 
+[0.10.0]: https://github.com/paulmanoni/deco/releases/tag/v0.10.0
 [0.9.0]: https://github.com/paulmanoni/deco/releases/tag/v0.9.0
 [0.8.0]: https://github.com/paulmanoni/deco/releases/tag/v0.8.0
 [0.7.1]: https://github.com/paulmanoni/deco/releases/tag/v0.7.1
