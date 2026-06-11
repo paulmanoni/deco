@@ -7,6 +7,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/paulmanoni/deco/transpiler"
 )
 
 func TestBuildGoArgs(t *testing.T) {
@@ -88,8 +90,8 @@ func TestPassThroughOverlayAndCleanup(t *testing.T) {
 	defer func() { overlayProvider, runChild = origProvider, origRunner }()
 
 	cleaned := false
-	overlayProvider = func() (string, func(), error) {
-		return "/tmp/fake-overlay.json", func() { cleaned = true }, nil
+	overlayProvider = func() (string, *transpiler.SourceMap, func(), error) {
+		return "/tmp/fake-overlay.json", nil, func() { cleaned = true }, nil
 	}
 	var gotArgs []string
 	runChild = func(cmd *exec.Cmd) error {
@@ -117,9 +119,9 @@ func TestPassThroughArbitraryNoOverlay(t *testing.T) {
 	origProvider, origRunner := overlayProvider, runChild
 	defer func() { overlayProvider, runChild = origProvider, origRunner }()
 
-	overlayProvider = func() (string, func(), error) {
+	overlayProvider = func() (string, *transpiler.SourceMap, func(), error) {
 		t.Fatal("overlay must not be built for a non-compile subcommand")
-		return "", nil, nil
+		return "", nil, nil, nil
 	}
 	var gotArgs []string
 	runChild = func(cmd *exec.Cmd) error { gotArgs = cmd.Args; return nil }
@@ -133,21 +135,43 @@ func TestPassThroughArbitraryNoOverlay(t *testing.T) {
 	}
 }
 
-// TestDiagFilter checks the read-vs-run seam: stderr streams through unchanged,
-// and a reference to a generated (*_gen.go) file flips the warn flag.
-func TestDiagFilter(t *testing.T) {
+// TestDiagFilterRemap checks the source-map remapping the go toolchain triggers:
+// it reports SHADOW paths, which must be rewritten to the real source path (with
+// the line remapped for transformed originals), generated wrappers keep their
+// line but get the logical path and a flag, and unknown files pass through.
+// Absolute paths outside the test cwd keep displayPath from rewriting them.
+func TestDiagFilterRemap(t *testing.T) {
+	orig := "/proj/example/math.go"     // transformed original, one marker at line 9
+	gen := "/proj/example/math_gen.go"  // fully generated
+	shadowOrig := "/tmp/ov/0_math.go"   // what `go` actually reports
+	shadowGen := "/tmp/ov/1_math_gen.go"
+	sm := transpiler.NewSourceMap(
+		map[string][]int{orig: {9}},
+		[]string{gen},
+		map[string]string{shadowOrig: orig, shadowGen: gen},
+	)
+
 	var buf bytes.Buffer
-	f := &diagFilter{w: &buf}
-	io.WriteString(f, "example/math.go:9:2: ordinary diagnostic\n")
-	if f.sawTranspiled {
-		t.Error("a plain source reference should not be flagged")
-	}
-	io.WriteString(f, "example/math_gen.go:6:9: vet: something\n")
+	f := newDiagFilter(&buf, sm)
+	io.WriteString(f, shadowOrig+":10:2: undefined: foo\n") // shadow line 10 → source math.go:9
+	io.WriteString(f, shadowGen+":6:9: vet: oops\n")        // generated → logical path, line kept
+	io.WriteString(f, "/proj/other.go:3:1: untouched\n")    // unknown → unchanged
 	f.flush()
-	if !f.sawTranspiled {
-		t.Error("a _gen.go reference should be flagged")
+
+	out := buf.String()
+	if !strings.Contains(out, orig+":9:2: undefined: foo") {
+		t.Errorf("shadow position not remapped to source math.go:9:\n%s", out)
 	}
-	if !strings.Contains(buf.String(), "math_gen.go:6:9") {
-		t.Error("filter must pass content through unchanged")
+	if strings.Contains(out, "0_math.go") {
+		t.Errorf("shadow path leaked into output:\n%s", out)
+	}
+	if !strings.Contains(out, gen+":6:9: vet: oops") {
+		t.Errorf("generated shadow should map to logical _gen.go path, line kept:\n%s", out)
+	}
+	if !strings.Contains(out, "/proj/other.go:3:1: untouched") {
+		t.Errorf("unknown file should pass through unchanged:\n%s", out)
+	}
+	if !f.sawGenerated {
+		t.Error("a generated-file reference should set sawGenerated")
 	}
 }

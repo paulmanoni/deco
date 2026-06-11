@@ -55,6 +55,7 @@ import (
 	"go/printer"
 	"go/token"
 	"io/fs"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -145,13 +146,99 @@ type Output struct {
 	Content []byte
 }
 
+// SourceMap relates positions in deco's transpiled output back to the user's
+// original source, so a tool reporting a diagnostic against the overlay can
+// translate the line number. It is returned by [OverlayWithSourceMap].
+//
+// Transformed originals only differ from the source by inserted //deco:wrapper
+// marker lines, so the mapping is a simple line shift. Generated wrappers
+// (*_gen.go) have no source equivalent at all.
+type SourceMap struct {
+	// inserted maps a transformed original's absolute LOGICAL path to the
+	// sorted, 1-based line numbers that the transpiler inserted into it.
+	inserted map[string][]int
+	// generated is the set of absolute LOGICAL paths that are fully generated.
+	generated map[string]bool
+	// shadowToLogical maps each overlay shadow file's absolute path (what the go
+	// toolchain actually reports in diagnostics) to its logical source path.
+	shadowToLogical map[string]string
+}
+
+func newSourceMap() *SourceMap {
+	return &SourceMap{
+		inserted:        map[string][]int{},
+		generated:       map[string]bool{},
+		shadowToLogical: map[string]string{},
+	}
+}
+
+// NewSourceMap builds a SourceMap from explicit data — primarily for tests and
+// tools that post-process diagnostics. inserted maps a transformed file's
+// absolute logical path to the 1-based line numbers inserted into it; generated
+// lists the fully generated (*_gen.go) logical paths; shadows maps overlay
+// shadow-file paths to their logical paths.
+func NewSourceMap(inserted map[string][]int, generated []string, shadows map[string]string) *SourceMap {
+	m := newSourceMap()
+	maps.Copy(m.inserted, inserted)
+	maps.Copy(m.shadowToLogical, shadows)
+	for _, p := range generated {
+		m.generated[p] = true
+	}
+	return m
+}
+
+// Remap translates a diagnostic position (the path and 1-based line as reported
+// by the go toolchain against the overlay) back to the user's source. path may
+// be an overlay shadow file or a logical path; absolute or relative to the cwd.
+//
+//   - known is false when the position isn't part of deco's output (an
+//     untouched file): leave it alone.
+//   - generated is true for a generated wrapper (*_gen.go): srcPath is the
+//     logical wrapper path and srcLine equals the input line (no source line
+//     exists), but the caller should still prefer srcPath over the shadow path.
+//   - otherwise srcPath/srcLine give the original source position.
+func (m *SourceMap) Remap(path string, line int) (srcPath string, srcLine int, generated, known bool) {
+	if m == nil {
+		return "", 0, false, false
+	}
+	abs := path
+	if !filepath.IsAbs(abs) {
+		if a, err := filepath.Abs(abs); err == nil {
+			abs = a
+		}
+	}
+	logical := abs
+	if l, ok := m.shadowToLogical[abs]; ok {
+		logical = l
+	}
+	if m.generated[logical] {
+		return logical, line, true, true
+	}
+	ins, ok := m.inserted[logical]
+	if !ok {
+		// A shadow we don't have line data for: still rewrite the path. An
+		// untouched file (logical == abs, no mapping): unknown, leave it.
+		return logical, line, false, logical != abs
+	}
+	shift := 0
+	for _, t := range ins {
+		if t <= line {
+			shift++
+		} else {
+			break
+		}
+	}
+	return logical, line - shift, false, true
+}
+
 // Transform analyses the whole package tree under dir and returns the generated
 // file contents in memory — the transformed (renamed) originals and the
 // <file>_gen.go wrappers — without writing anything to disk. Use it when you
 // want to inspect or post-process the output yourself; use [Generate] to write
 // the files, or [Overlay] to feed them to `go build -overlay`.
 func Transform(dir string, opts ...Option) ([]Output, error) {
-	return transformTree(dir, newConfig(opts))
+	outputs, _, err := transformTree(dir, newConfig(opts))
+	return outputs, err
 }
 
 // analysis is the parsed, validated view of a package directory.
@@ -322,37 +409,40 @@ func analyze(dir string, cfg config) (*analysis, error) {
 // transformed (renamed) originals plus the generated wrappers. Nothing is
 // written; callers decide whether to materialise the outputs as real files
 // (Generate) or feed them to the build untouched-on-disk (Overlay).
-func transform(dir string, cfg config) ([]Output, error) {
+func transform(dir string, cfg config) ([]Output, *SourceMap, error) {
 	a, err := analyze(dir, cfg)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	var outputs []Output
+	sm := newSourceMap()
 	for _, path := range a.srcNames {
 		jobs := a.jobsByFile[path]
 		if len(jobs) == 0 {
 			continue
 		}
 		// Transformed original — only when something actually needs renaming.
-		renamed, changed, err := renameBytes(path, jobs, a.fset)
+		renamed, inserted, changed, err := renameBytes(path, jobs, a.fset)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		if changed {
 			outputs = append(outputs, Output{Path: path, Content: renamed})
+			sm.inserted[path] = inserted
 		}
 		// Generated wrapper, with any imports its decorators and reproduced
 		// signatures need.
 		imports := importsForFile(jobs, a.fileImports[path], a.resolver)
 		gen, err := genBytes(path, a.files[path].Name.Name, jobs, imports, a.fset)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		base := strings.TrimSuffix(filepath.Base(path), ".go")
 		genPath := filepath.Join(filepath.Dir(path), base+"_gen.go")
 		outputs = append(outputs, Output{Path: genPath, Content: gen})
+		sm.generated[genPath] = true
 	}
-	return outputs, nil
+	return outputs, sm, nil
 }
 
 // packageDirs returns every directory at or under root that holds Go source we
@@ -396,20 +486,23 @@ func packageDirs(root string) ([]string, error) {
 // transformTree runs transform over every package directory at or under root
 // and concatenates the results, so decorators are realised across the whole
 // multi-folder project, not just the top directory.
-func transformTree(root string, cfg config) ([]Output, error) {
+func transformTree(root string, cfg config) ([]Output, *SourceMap, error) {
 	dirs, err := packageDirs(root)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	var all []Output
+	merged := newSourceMap()
 	for _, d := range dirs {
-		outputs, err := transform(d, cfg)
+		outputs, sm, err := transform(d, cfg)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		all = append(all, outputs...)
+		maps.Copy(merged.inserted, sm.inserted)
+		maps.Copy(merged.generated, sm.generated)
 	}
-	return all, nil
+	return all, merged, nil
 }
 
 // Generate runs the transpiler and MATERIALISES the results on disk: it renames
@@ -417,7 +510,7 @@ func transformTree(root string, cfg config) ([]Output, error) {
 // <file>_gen.go wrappers next to them. It processes the whole package tree
 // under dir.
 func Generate(dir string, opts ...Option) error {
-	outputs, err := transformTree(dir, newConfig(opts))
+	outputs, _, err := transformTree(dir, newConfig(opts))
 	if err != nil {
 		return err
 	}
@@ -439,13 +532,22 @@ func Generate(dir string, opts ...Option) error {
 // cleanup removes the temp directory; callers should defer it. It processes the
 // whole package tree under dir, so every package's decorators are injected.
 func Overlay(dir string, opts ...Option) (overlayPath string, cleanup func(), err error) {
-	outputs, err := transformTree(dir, newConfig(opts))
+	overlayPath, _, cleanup, err = OverlayWithSourceMap(dir, opts...)
+	return overlayPath, cleanup, err
+}
+
+// OverlayWithSourceMap is like [Overlay] but also returns a [SourceMap] that
+// translates positions in the transpiled overlay back to the user's original
+// source — useful for rewriting compiler/vet diagnostics that would otherwise
+// point at generated lines.
+func OverlayWithSourceMap(dir string, opts ...Option) (overlayPath string, sourceMap *SourceMap, cleanup func(), err error) {
+	outputs, sm, err := transformTree(dir, newConfig(opts))
 	if err != nil {
-		return "", nil, err
+		return "", nil, nil, err
 	}
 	tmp, err := os.MkdirTemp("", "deco-overlay-")
 	if err != nil {
-		return "", nil, err
+		return "", nil, nil, err
 	}
 	cleanup = func() { os.RemoveAll(tmp) }
 
@@ -457,9 +559,10 @@ func Overlay(dir string, opts ...Option) (overlayPath string, cleanup func(), er
 		shadow := filepath.Join(tmp, fmt.Sprintf("%d_%s", i, filepath.Base(o.Path)))
 		if err := os.WriteFile(shadow, o.Content, 0o644); err != nil {
 			cleanup()
-			return "", nil, err
+			return "", nil, nil, err
 		}
 		replace[o.Path] = shadow
+		sm.shadowToLogical[shadow] = o.Path // so diagnostics on the shadow map back
 	}
 
 	overlayPath = filepath.Join(tmp, "overlay.json")
@@ -467,13 +570,13 @@ func Overlay(dir string, opts ...Option) (overlayPath string, cleanup func(), er
 	data, err := json.MarshalIndent(doc, "", "  ")
 	if err != nil {
 		cleanup()
-		return "", nil, err
+		return "", nil, nil, err
 	}
 	if err := os.WriteFile(overlayPath, data, 0o644); err != nil {
 		cleanup()
-		return "", nil, err
+		return "", nil, nil, err
 	}
-	return overlayPath, cleanup, nil
+	return overlayPath, sm, cleanup, nil
 }
 
 // parseAnnotations scans a doc group for //@decorate lines (and the
@@ -795,11 +898,12 @@ func moduleRoot(dir string) string {
 // renamed to its impl name and a wrapper marker stamped above it. It edits text
 // directly (using AST node offsets) instead of reprinting the AST, so untouched
 // code, comments and formatting are preserved byte-for-byte. changed reports
-// whether any rename was actually applied.
-func renameBytes(path string, jobs []job, fset *token.FileSet) (out []byte, changed bool, err error) {
+// whether any rename was actually applied; inserted is the sorted, 1-based line
+// numbers of the marker lines in the output (the source map for this file).
+func renameBytes(path string, jobs []job, fset *token.FileSet) (out []byte, inserted []int, changed bool, err error) {
 	src, err := os.ReadFile(path)
 	if err != nil {
-		return nil, false, fmt.Errorf("reading %s: %w", path, err)
+		return nil, nil, false, fmt.Errorf("reading %s: %w", path, err)
 	}
 
 	type edit struct {
@@ -807,6 +911,7 @@ func renameBytes(path string, jobs []job, fset *token.FileSet) (out []byte, chan
 		text       string
 	}
 	var edits []edit
+	var srcFuncLines []int // source lines of funcs that get a marker inserted
 	for _, j := range jobs {
 		if !j.needsRename {
 			continue
@@ -821,9 +926,19 @@ func renameBytes(path string, jobs []job, fset *token.FileSet) (out []byte, chan
 		// FuncDecl.Pos() is the func keyword (column 0 for a top-level func).
 		funcStart := fset.Position(j.decl.Pos()).Offset
 		edits = append(edits, edit{funcStart, funcStart, marker + j.wrapperName + "\n"})
+		srcFuncLines = append(srcFuncLines, fset.Position(j.decl.Pos()).Line)
 	}
 	if len(edits) == 0 {
-		return src, false, nil
+		return src, nil, false, nil
+	}
+
+	// Each marker adds exactly one line above its func. With source func lines
+	// sorted ascending, the i-th (0-based) marker lands at output line
+	// srcLine[i] + i, because i earlier markers already shifted everything down.
+	sort.Ints(srcFuncLines)
+	inserted = make([]int, len(srcFuncLines))
+	for i, l := range srcFuncLines {
+		inserted[i] = l + i
 	}
 
 	// Apply from the end of the file backwards so offsets stay valid. We do NOT
@@ -835,7 +950,7 @@ func renameBytes(path string, jobs []job, fset *token.FileSet) (out []byte, chan
 	for _, e := range edits {
 		out = append(out[:e.start:e.start], append([]byte(e.text), out[e.end:]...)...)
 	}
-	return out, true, nil
+	return out, inserted, true, nil
 }
 
 // genTemplate renders one generated file. Functions are emitted in source

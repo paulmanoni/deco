@@ -27,6 +27,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -106,10 +108,10 @@ var overlaySubcommands = map[string]bool{
 	"list":    true,
 }
 
-// overlayProvider produces deco's overlay for the current directory tree. It is
-// a package var so tests can substitute a fake.
-var overlayProvider = func() (path string, cleanup func(), err error) {
-	return transpiler.Overlay(".", opts()...)
+// overlayProvider produces deco's overlay (and its source map) for the current
+// directory tree. It is a package var so tests can substitute a fake.
+var overlayProvider = func() (path string, sm *transpiler.SourceMap, cleanup func(), err error) {
+	return transpiler.OverlayWithSourceMap(".", opts()...)
 }
 
 // runChild executes the assembled command. A package var so tests can intercept
@@ -121,14 +123,16 @@ var runChild = func(cmd *exec.Cmd) error { return cmd.Run() }
 // always runs (deferred), even on failure or panic.
 func passThrough(sub string, userArgs []string) int {
 	var overlayPath string
+	var sm *transpiler.SourceMap
 	if overlaySubcommands[sub] {
-		path, cleanup, err := overlayProvider()
+		path, m, cleanup, err := overlayProvider()
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "deco:", err)
 			return 1
 		}
 		defer cleanup() // always remove the temp overlay, even on panic/failure
 		overlayPath = path
+		sm = m
 	}
 
 	cmd := exec.Command("go", buildGoArgs(sub, overlayPath, userArgs)...)
@@ -137,10 +141,11 @@ func passThrough(sub string, userArgs []string) int {
 	cmd.Stdout = os.Stdout
 
 	// `run` streams raw so the program stays interactive. The diagnostic
-	// commands route stderr through a filter that flags transpiled positions.
+	// commands route stderr through a filter that remaps transpiled positions
+	// back to the user's source.
 	var filter *diagFilter
 	if overlayPath != "" && sub != "run" {
-		filter = &diagFilter{w: os.Stderr}
+		filter = newDiagFilter(os.Stderr, sm)
 		cmd.Stderr = filter
 	} else {
 		cmd.Stderr = os.Stderr
@@ -150,10 +155,10 @@ func passThrough(sub string, userArgs []string) int {
 
 	if filter != nil {
 		filter.flush()
-		if filter.sawTranspiled {
+		if filter.sawGenerated {
 			fmt.Fprintln(os.Stderr,
-				"deco: note: positions above refer to deco's transpiled output (e.g. *_gen.go);\n"+
-					"      they may not line up with your original source.")
+				"deco: note: some positions above are in generated wrappers (*_gen.go),\n"+
+					"      which have no source equivalent. Other positions were mapped back to your source.")
 		}
 	}
 	return exitCodeFromErr(err)
@@ -183,46 +188,90 @@ func exitCodeFromErr(err error) int {
 	return 1
 }
 
-// diagFilter streams a child's stderr through unchanged while detecting
-// references to deco's transpiled output, so deco can warn that reported
-// positions may not match the user's source.
+// diagLine matches a Go diagnostic position at the start of a line:
+// "<path>.go:<line>[:col][: message]". The path is non-greedy so it stops at
+// the first ".go", not a later one inside the message.
+var diagLine = regexp.MustCompile(`^(.+?\.go):(\d+)(:.*)?$`)
+
+// diagFilter line-buffers a child's stderr and rewrites positions that point
+// into deco's transpiled overlay back to the user's original source, using the
+// transpiler's SourceMap. Generated wrappers (*_gen.go) have no source line, so
+// those are left as-is and flagged for a closing note. Lines without a known
+// transpiled position pass through untouched.
 //
-// SEAM: this is exactly where a future source-map pass slots in. To remap, it
-// would buffer each complete line, rewrite "<gen-file>:line:col" back to the
-// original source position using a position table built during transpilation,
-// then write. Today it must NOT delay output (so wrapped programs stay
-// responsive), so it writes first and only scans whole lines for detection.
+// This is the source-map seam the pass-through layer was designed around: all
+// rewriting happens in remap, fed by transpiler.SourceMap.
 type diagFilter struct {
-	w             io.Writer
-	acc           []byte
-	sawTranspiled bool
+	w            io.Writer
+	sm           *transpiler.SourceMap
+	acc          []byte
+	sawGenerated bool
+}
+
+func newDiagFilter(w io.Writer, sm *transpiler.SourceMap) *diagFilter {
+	return &diagFilter{w: w, sm: sm}
 }
 
 func (f *diagFilter) Write(p []byte) (int, error) {
-	n, err := f.w.Write(p) // stream immediately
 	f.acc = append(f.acc, p...)
 	for {
 		i := bytes.IndexByte(f.acc, '\n')
 		if i < 0 {
 			break
 		}
-		f.detect(f.acc[:i])
+		f.emit(f.acc[:i], true)
 		f.acc = f.acc[i+1:]
 	}
-	return n, err
+	return len(p), nil
 }
 
 func (f *diagFilter) flush() {
 	if len(f.acc) > 0 {
-		f.detect(f.acc)
+		f.emit(f.acc, false)
 		f.acc = nil
 	}
 }
 
-func (f *diagFilter) detect(line []byte) {
-	if !f.sawTranspiled && bytes.Contains(line, []byte("_gen.go")) {
-		f.sawTranspiled = true
+func (f *diagFilter) emit(line []byte, newline bool) {
+	f.w.Write(f.remap(line))
+	if newline {
+		f.w.Write([]byte{'\n'})
 	}
+}
+
+// remap rewrites the line's leading position. A transformed original's shadow
+// path + transpiled line becomes the real source path + source line; a
+// generated wrapper keeps its line but its shadow path becomes the logical
+// *_gen.go path (and is flagged for the note); unknown files are left alone.
+func (f *diagFilter) remap(line []byte) []byte {
+	m := diagLine.FindSubmatch(line)
+	if m == nil {
+		return line
+	}
+	ln, err := strconv.Atoi(string(m[2]))
+	if err != nil {
+		return line
+	}
+	srcPath, srcLine, generated, known := f.sm.Remap(string(m[1]), ln)
+	if !known {
+		return line
+	}
+	if generated {
+		f.sawGenerated = true
+		return []byte(displayPath(srcPath) + ":" + string(m[2]) + string(m[3]))
+	}
+	return []byte(displayPath(srcPath) + ":" + strconv.Itoa(srcLine) + string(m[3]))
+}
+
+// displayPath shows an absolute path relative to the cwd when it sits beneath
+// it (matching how go prints source paths), else the absolute path.
+func displayPath(abs string) string {
+	if cwd, err := os.Getwd(); err == nil {
+		if rel, err := filepath.Rel(cwd, abs); err == nil && !strings.HasPrefix(rel, "..") {
+			return rel
+		}
+	}
+	return abs
 }
 
 // rootCmd wires up the cobra command tree (deco-native commands only; toolchain

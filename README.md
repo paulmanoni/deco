@@ -64,11 +64,13 @@ deco --annotation "@wrap" test ./...   # use //@wrap instead of //@decorate
 `deco generate [dir]` is the one non-wrapper command: it writes `<file>_gen.go`
 to disk instead of using an overlay.
 
-> **Known limitation (read-vs-run gap):** `vet`/`test`/`build` run against the
-> *transpiled* code, so a diagnostic can point at a generated `*_gen.go` line
-> rather than your source. deco prints a note when it detects this. Mapping
-> those positions back to your original source is planned (a source-map pass);
-> the exec layer already has the hook for it.
+> **Positions:** `vet`/`test`/`build` run against the *transpiled* overlay, but
+> deco **remaps diagnostic positions back to your source** — a `vet` finding in a
+> decorated function reports the same `file:line` as bare `go vet`, not a temp
+> overlay path. The exception is a diagnostic in a generated wrapper
+> (`*_gen.go`), which has no source equivalent; deco shows the logical
+> `*_gen.go` path and prints a note. (Remapping is applied to the child's
+> stderr; positions that test failures print to stdout are not remapped.)
 
 ## Creating a custom decorator
 
