@@ -138,30 +138,52 @@ func passThrough(sub string, userArgs []string) int {
 	cmd := exec.Command("go", buildGoArgs(sub, overlayPath, userArgs)...)
 	cmd.Env = os.Environ() // preserve GOFLAGS, CGO_ENABLED, GOOS/GOARCH, caches…
 	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
 
-	// `run` streams raw so the program stays interactive. The diagnostic
-	// commands route stderr through a filter that remaps transpiled positions
-	// back to the user's source.
-	var filter *diagFilter
+	// Remap transpiled positions back to source. stderr carries compiler/vet
+	// diagnostics for every overlay subcommand (except `run`, which streams its
+	// program raw). `go test` additionally prints failure positions and panic
+	// stacks to stdout, so filter that too — but never under -json, whose
+	// machine output must pass through verbatim.
+	var stderrFilter, stdoutFilter *diagFilter
 	if overlayPath != "" && sub != "run" {
-		filter = newDiagFilter(os.Stderr, sm)
-		cmd.Stderr = filter
+		stderrFilter = newDiagFilter(os.Stderr, sm)
+		cmd.Stderr = stderrFilter
 	} else {
 		cmd.Stderr = os.Stderr
+	}
+	if sub == "test" && !hasJSONFlag(userArgs) {
+		stdoutFilter = newDiagFilter(os.Stdout, sm)
+		cmd.Stdout = stdoutFilter
+	} else {
+		cmd.Stdout = os.Stdout
 	}
 
 	err := runChild(cmd)
 
-	if filter != nil {
-		filter.flush()
-		if filter.sawGenerated {
-			fmt.Fprintln(os.Stderr,
-				"deco: note: some positions above are in generated wrappers (*_gen.go),\n"+
-					"      which have no source equivalent. Other positions were mapped back to your source.")
+	sawGenerated := false
+	for _, fl := range []*diagFilter{stderrFilter, stdoutFilter} {
+		if fl != nil {
+			fl.flush()
+			sawGenerated = sawGenerated || fl.sawGenerated
 		}
 	}
+	if sawGenerated {
+		fmt.Fprintln(os.Stderr,
+			"deco: note: some positions above are in generated wrappers (*_gen.go),\n"+
+				"      which have no source equivalent. Other positions were mapped back to your source.")
+	}
 	return exitCodeFromErr(err)
+}
+
+// hasJSONFlag reports whether the user requested machine-readable JSON output
+// (go test -json / go list -json), which deco must not rewrite.
+func hasJSONFlag(args []string) bool {
+	for _, a := range args {
+		if a == "-json" || a == "--json" {
+			return true
+		}
+	}
+	return false
 }
 
 // buildGoArgs assembles the argument vector for the go child: the subcommand,
@@ -188,10 +210,12 @@ func exitCodeFromErr(err error) int {
 	return 1
 }
 
-// diagLine matches a Go diagnostic position at the start of a line:
-// "<path>.go:<line>[:col][: message]". The path is non-greedy so it stops at
-// the first ".go", not a later one inside the message.
-var diagLine = regexp.MustCompile(`^(.+?\.go):(\d+)(:.*)?$`)
+// diagPos matches a Go position "<path>.go:<line>" anywhere in a line — at the
+// start (compiler/vet diagnostics), indented (test failures like
+// "    foo_test.go:12: ..."), or in a panic stack frame
+// ("\t/abs/foo.go:42 +0x..."). The path is the run of non-space characters
+// ending in ".go".
+var diagPos = regexp.MustCompile(`(\S+\.go):(\d+)`)
 
 // diagFilter line-buffers a child's stderr and rewrites positions that point
 // into deco's transpiled overlay back to the user's original source, using the
@@ -239,28 +263,29 @@ func (f *diagFilter) emit(line []byte, newline bool) {
 	}
 }
 
-// remap rewrites the line's leading position. A transformed original's shadow
-// path + transpiled line becomes the real source path + source line; a
-// generated wrapper keeps its line but its shadow path becomes the logical
-// *_gen.go path (and is flagged for the note); unknown files are left alone.
+// remap rewrites every transpiled position in the line. A transformed
+// original's shadow path + transpiled line becomes the real source path +
+// source line; a generated wrapper keeps its line but its shadow path becomes
+// the logical *_gen.go path (and is flagged for the note); unknown files (test
+// files, untouched sources) are left alone. Any trailing ":col: message" sits
+// outside the match and is preserved as-is.
 func (f *diagFilter) remap(line []byte) []byte {
-	m := diagLine.FindSubmatch(line)
-	if m == nil {
-		return line
-	}
-	ln, err := strconv.Atoi(string(m[2]))
-	if err != nil {
-		return line
-	}
-	srcPath, srcLine, generated, known := f.sm.Remap(string(m[1]), ln)
-	if !known {
-		return line
-	}
-	if generated {
-		f.sawGenerated = true
-		return []byte(displayPath(srcPath) + ":" + string(m[2]) + string(m[3]))
-	}
-	return []byte(displayPath(srcPath) + ":" + strconv.Itoa(srcLine) + string(m[3]))
+	return diagPos.ReplaceAllFunc(line, func(match []byte) []byte {
+		sub := diagPos.FindSubmatch(match)
+		ln, err := strconv.Atoi(string(sub[2]))
+		if err != nil {
+			return match
+		}
+		srcPath, srcLine, generated, known := f.sm.Remap(string(sub[1]), ln)
+		if !known {
+			return match
+		}
+		if generated {
+			f.sawGenerated = true
+			return []byte(displayPath(srcPath) + ":" + string(sub[2]))
+		}
+		return []byte(displayPath(srcPath) + ":" + strconv.Itoa(srcLine))
+	})
 }
 
 // displayPath shows an absolute path relative to the cwd when it sits beneath

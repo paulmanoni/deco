@@ -65,12 +65,14 @@ deco --annotation "@wrap" test ./...   # use //@wrap instead of //@decorate
 to disk instead of using an overlay.
 
 > **Positions:** `vet`/`test`/`build` run against the *transpiled* overlay, but
-> deco **remaps diagnostic positions back to your source** — a `vet` finding in a
-> decorated function reports the same `file:line` as bare `go vet`, not a temp
-> overlay path. The exception is a diagnostic in a generated wrapper
+> deco **remaps diagnostic positions back to your source** — both compiler/vet
+> diagnostics (stderr) and `go test` failure messages and panic stacks (stdout).
+> A finding in a decorated function reports the same `file:line` as bare `go`,
+> not a temp overlay path. The exception is a position in a generated wrapper
 > (`*_gen.go`), which has no source equivalent; deco shows the logical
-> `*_gen.go` path and prints a note. (Remapping is applied to the child's
-> stderr; positions that test failures print to stdout are not remapped.)
+> `*_gen.go` path and prints a note. Machine output (`-json`) is passed through
+> verbatim. See [`examples/remap-demo`](examples/remap-demo) for a runnable
+> demonstration.
 
 ## Creating a custom decorator
 

@@ -175,3 +175,43 @@ func TestDiagFilterRemap(t *testing.T) {
 		t.Error("a generated-file reference should set sawGenerated")
 	}
 }
+
+// TestDiagFilterStdoutPositions covers the stdout cases `go test` emits: an
+// indented failure line and a tab-indented panic stack frame, where the
+// position is mid-line (not at the start) and a shadow path is used.
+func TestDiagFilterStdoutPositions(t *testing.T) {
+	orig := "/proj/calc.go"           // func at source line 11, body at 12
+	shadow := "/tmp/ov/0_calc.go"     // overlay shifts body to line 13
+	sm := transpiler.NewSourceMap(
+		map[string][]int{orig: {11}}, // one marker inserted at line 11
+		nil,
+		map[string]string{shadow: orig},
+	)
+
+	var buf bytes.Buffer
+	f := newDiagFilter(&buf, sm)
+	io.WriteString(f, "    "+shadow+":13: assertion failed\n") // indented test failure
+	io.WriteString(f, "\t"+shadow+":13 +0x30\n")               // panic stack frame
+	f.flush()
+
+	out := buf.String()
+	// 13 → 12, shadow → source path; leading whitespace and trailing text kept.
+	if !strings.Contains(out, "    "+orig+":12: assertion failed") {
+		t.Errorf("indented failure not remapped:\n%q", out)
+	}
+	if !strings.Contains(out, "\t"+orig+":12 +0x30") {
+		t.Errorf("stack frame not remapped:\n%q", out)
+	}
+	if strings.Contains(out, "0_calc.go") {
+		t.Errorf("shadow path leaked:\n%q", out)
+	}
+}
+
+func TestHasJSONFlag(t *testing.T) {
+	if !hasJSONFlag([]string{"-race", "-json", "./..."}) {
+		t.Error("-json not detected")
+	}
+	if hasJSONFlag([]string{"-race", "./..."}) {
+		t.Error("false positive for -json")
+	}
+}
