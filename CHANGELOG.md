@@ -4,6 +4,31 @@ All notable changes to **deco** are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.9.0] - 2026-06-11
+
+### Added
+
+- Go toolchain pass-through: `deco <subcommand>` runs `go <subcommand>` with
+  deco's transpile overlay applied first. Subcommand-agnostic — `build`, `run`,
+  `test`, `vet`, `install`, `list` and any future go subcommand are forwarded
+  (the compile/run ones get `-overlay`; others are forwarded untouched). User
+  args, environment, working directory and stdio are forwarded faithfully, and
+  deco mirrors the child's exact exit code.
+- A stderr filter that warns when a diagnostic references transpiled output
+  (`*_gen.go`) — the seam for a future source-map position-remapping pass.
+- Tests for arg forwarding, exit-code fidelity, overlay injection, cleanup on
+  failure, and arbitrary-subcommand forwarding.
+
+### Changed
+
+- deco's own flags (`--annotation`) now go before the subcommand for
+  pass-through commands, e.g. `deco --annotation "@wrap" test ./...`.
+
+### Known limitations
+
+- `vet`/`test`/`build` diagnostics report positions in the transpiled output,
+  not your source. Position remapping is deferred.
+
 ## [0.8.0] - 2026-06-10
 
 ### Added
@@ -122,6 +147,7 @@ All notable changes to **deco** are documented here. The format is based on
 - Clear `file:line` errors for unknown / wrong-arity decorators and methods.
 - Three-signature example; installable with `go install`.
 
+[0.9.0]: https://github.com/paulmanoni/deco/releases/tag/v0.9.0
 [0.8.0]: https://github.com/paulmanoni/deco/releases/tag/v0.8.0
 [0.7.1]: https://github.com/paulmanoni/deco/releases/tag/v0.7.1
 [0.7.0]: https://github.com/paulmanoni/deco/releases/tag/v0.7.0
