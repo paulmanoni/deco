@@ -5,3 +5,5 @@
 /examples/router/router
 # JetBrains IDE
 .idea/
+# Stray binaries from `deco build ./<mainpkg>` writing to the module root
+/router

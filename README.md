@@ -33,23 +33,42 @@ deco run .
 go install github.com/paulmanoni/deco@latest
 ```
 
-## Commands
+## deco as a go wrapper
+
+Run `deco <cmd>` anywhere you'd run `go <cmd>`. deco transpiles your decorators
+into an overlay and then **hands off to the real `go` toolchain** — it never
+reimplements go behavior, so flags, exit codes, and output are exactly go's.
 
 ```sh
-deco run [dir]        # run the program with decorators applied (source untouched)
-deco build [dir]      # build it
-deco generate [dir]   # write the generated wrappers to disk instead
+deco build ./...            # = go build with decorators applied
+deco run .                  # = go run .   (reads stdin, streams output)
+deco test -race ./...       # = go test -race ./...
+deco vet ./...              # = go vet ./...
+deco install ./cmd/foo      # = go install ./cmd/foo
 ```
 
-`dir` defaults to `.` and may also be a `.go` file. `run` and `build` use Go's
-`-overlay`, so your source files are never modified; `generate` writes
-`<file>_gen.go` files next to your code.
+- The compile/run subcommands (`build run test vet install list`) get deco's
+  `-overlay`, so **your source files are never modified**.
+- Any other subcommand (`env`, `version`, `mod`, …) is forwarded verbatim with
+  no overlay — including future go subcommands.
+- All flags and packages are passed through untouched, the child inherits your
+  environment and working directory, and **deco exits with the child's exact
+  exit code** (so a failing `deco test` fails CI).
 
-Prefer a different keyword to `@decorate`? Pass `--annotation` (on any command):
+deco's own flags go **before** the subcommand:
 
 ```sh
-deco run --annotation "@wrap" .   # now recognises //@wrap name
+deco --annotation "@wrap" test ./...   # use //@wrap instead of //@decorate
 ```
+
+`deco generate [dir]` is the one non-wrapper command: it writes `<file>_gen.go`
+to disk instead of using an overlay.
+
+> **Known limitation (read-vs-run gap):** `vet`/`test`/`build` run against the
+> *transpiled* code, so a diagnostic can point at a generated `*_gen.go` line
+> rather than your source. deco prints a note when it detects this. Mapping
+> those positions back to your original source is planned (a source-map pass);
+> the exec layer already has the hook for it.
 
 ## Creating a custom decorator
 
