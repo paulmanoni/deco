@@ -97,11 +97,36 @@ for _, h := range hits {
 ```
 
 Each `Hit` is one `//@<keyword>` directive on a top-level function's doc
-comment, in deterministic order, with the arguments pre-split and the exact
-source position for your own error messages. Filter keywords by passing them
-(with or without the `@`), or pass none to receive every directive. Generated
-(`*_gen.go`), test, vendored and hidden files are skipped, and a function deco
-itself has renamed reports its public name.
+comment **or on a package clause's doc comment**, in deterministic order, with
+the arguments pre-split and the exact source position for your own error
+messages. Filter keywords by passing them (with or without the `@`), or pass
+none to receive every directive. Generated (`*_gen.go`), test, vendored and
+hidden files are skipped, and a function deco itself has renamed reports its
+public name.
+
+**Package-level hits** carry `PackageLevel: true` and an empty `Func` — the
+front-end for package-scoped metadata like a registration group's name or a
+route prefix:
+
+```go
+// Package billing handles invoicing.
+//
+//@module billing
+//@path /billing
+package billing
+```
+
+```go
+for _, h := range hits {
+	if h.PackageLevel {
+		// h.Keyword == "module", h.Args == ["billing"], h.Func == ""
+	}
+}
+```
+
+The keyword filter applies to package-level hits equally, and a consumer that
+keys on `h.Func != ""` never sees them, so adding package directives to an
+existing pipeline is opt-in.
 
 This is exactly how the [nexus](https://github.com/paulmanoni/nexus) framework
 implements `//@rest GET /users` → route registration: `Scan` surfaces the

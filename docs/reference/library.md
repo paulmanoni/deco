@@ -28,7 +28,7 @@ The same engine the CLI uses, exported for your own tooling:
 | `Transform(dir string, opts ...Option) ([]Output, error)` | the same generation, returned in memory — no writes |
 | `Overlay(dir string, opts ...Option) (path string, cleanup func(), err error)` | write a `go build -overlay` JSON; source left untouched |
 | `OverlayWithSourceMap(dir, opts...)` | `Overlay` plus a `SourceMap` for remapping diagnostics |
-| `Scan(dir string, keywords ...string) ([]Hit, error)` | read-only: return every `//@<keyword>` directive as data, for downstream code generators |
+| `Scan(dir string, keywords ...string) ([]Hit, error)` | read-only: return every `//@<keyword>` directive — on functions and on package doc comments (`Hit.PackageLevel`) — as data, for downstream code generators |
 | `WithAnnotation(keyword string) Option` | custom alias keyword (`//deco:wrap` always works) |
 
 ```go
@@ -45,5 +45,7 @@ Or wire it into `go generate` without installing the binary:
 
 `Scan` is the front-end for tools that generate their own code from
 annotations (a web framework turning `//@rest GET /users` into a route
-registration): it surfaces each directive as a `Hit{Pkg, File, Func, Keyword,
-Args, Pos}` without modifying anything.
+registration, or a package-doc `//@module billing` into the registration
+group): it surfaces each directive as a `Hit{Pkg, File, Func, Keyword, Args,
+Pos, PackageLevel}` without modifying anything. See
+[Using deco in your own library](../guide/embedding#building-your-own-annotations-with-scan).
