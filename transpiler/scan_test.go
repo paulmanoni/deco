@@ -158,3 +158,46 @@ func TestScan_HonorsWrapperMarker(t *testing.T) {
 		t.Fatalf("wrapper marker not honored: %+v", hits)
 	}
 }
+
+// TestScan_PackageLevel: directives on the package clause's doc comment come
+// back as PackageLevel hits with an empty Func, alongside function hits, and
+// the keyword filter applies to them equally.
+func TestScan_PackageLevel(t *testing.T) {
+	dir := t.TempDir()
+	writeScanFile(t, dir, "pkg.go", `// Package billing handles invoicing.
+//
+//@module billing
+//@path /billing
+package billing
+
+//@rest GET /invoices
+func NewList() error { return nil }
+`)
+	hits, err := Scan(dir)
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	byKw := map[string]Hit{}
+	for _, h := range hits {
+		byKw[h.Keyword] = h
+	}
+	mod, ok := byKw["module"]
+	if !ok || !mod.PackageLevel || mod.Func != "" || len(mod.Args) != 1 || mod.Args[0] != "billing" {
+		t.Errorf("//@module hit wrong: %+v", mod)
+	}
+	if p := byKw["path"]; !p.PackageLevel || p.Args[0] != "/billing" || p.Pos.Line != 4 {
+		t.Errorf("//@path hit wrong: %+v", p)
+	}
+	if r := byKw["rest"]; r.PackageLevel || r.Func != "NewList" {
+		t.Errorf("function hit regressed: %+v", r)
+	}
+
+	// The keyword filter selects package-level hits like any other.
+	only, err := Scan(dir, "module")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(only) != 1 || only[0].Keyword != "module" {
+		t.Errorf("filter should return just //@module, got %+v", only)
+	}
+}

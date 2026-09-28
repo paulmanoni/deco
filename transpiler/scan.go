@@ -11,25 +11,33 @@ import (
 	"strings"
 )
 
-// Hit is one //@<keyword> directive found on a top-level function declaration.
-// It is the read-only counterpart to the wrap/codegen modes: instead of
-// rewriting the function, Scan surfaces the annotation as data so a downstream
-// tool can generate whatever it likes from it (e.g. nexus turns //@rest into a
-// route registration). deco itself stays oblivious to what the keywords mean.
+// Hit is one //@<keyword> directive found on a top-level function declaration
+// or on a file's package doc comment. It is the read-only counterpart to the
+// wrap/codegen modes: instead of rewriting anything, Scan surfaces the
+// annotation as data so a downstream tool can generate whatever it likes from
+// it (e.g. nexus turns //@rest into a route registration, and a package-level
+// //@module into the registration group). deco itself stays oblivious to what
+// the keywords mean.
 type Hit struct {
-	Pkg     string         // package name the function lives in
+	Pkg     string         // package name the directive lives in
 	File    string         // absolute path of the source file
-	Func    string         // annotated function name (honors a //deco:wrapper override)
+	Func    string         // annotated function name ("" for a package-level hit)
 	Keyword string         // directive keyword WITHOUT the leading '@', e.g. "rest"
 	Args    []string       // whitespace-split tokens after the keyword
 	Pos     token.Position // position of the directive line
+
+	// PackageLevel marks a directive found on the package clause's doc
+	// comment rather than on a function — package-scoped metadata like a
+	// module name or a route prefix. Func is "" for these.
+	PackageLevel bool
 }
 
 // Scan walks the package tree under dir — recursively, skipping generated
 // (*_gen.go), test (*_test.go), vendor, testdata, node_modules and hidden
 // directories, exactly like Generate/Overlay — and returns every //@<keyword>
-// directive on a top-level function's doc comment, in deterministic
-// (dir, file, source-order) sequence.
+// directive on a top-level function's doc comment or on a package clause's
+// doc comment (Hit.PackageLevel), in deterministic (dir, file, source-order)
+// sequence.
 //
 // If keywords is non-empty, only directives whose keyword (the token after the
 // leading '@') is listed are returned; otherwise every '@'-prefixed directive
@@ -63,6 +71,9 @@ func Scan(dir string, keywords ...string) ([]Hit, error) {
 				return nil, fmt.Errorf("parsing %s: %w", path, err)
 			}
 			pkg := f.Name.Name
+			if f.Doc != nil {
+				hits = append(hits, scanComments(f.Doc, "", true, pkg, path, fset, want)...)
+			}
 			for _, decl := range f.Decls {
 				fn, ok := decl.(*ast.FuncDecl)
 				if !ok || fn.Doc == nil {
@@ -90,8 +101,14 @@ func scanDoc(fn *ast.FuncDecl, pkg, path string, fset *token.FileSet, want map[s
 		}
 	}
 
+	return scanComments(fn.Doc, name, false, pkg, path, fset, want)
+}
+
+// scanComments extracts the //@ directives from one comment group — a
+// function's doc, or (packageLevel) the package clause's doc.
+func scanComments(doc *ast.CommentGroup, funcName string, packageLevel bool, pkg, path string, fset *token.FileSet, want map[string]bool) []Hit {
 	var hits []Hit
-	for _, c := range fn.Doc.List {
+	for _, c := range doc.List {
 		content := strings.TrimSpace(strings.TrimLeft(c.Text, "/"))
 		if !strings.HasPrefix(content, "@") {
 			continue
@@ -105,12 +122,13 @@ func scanDoc(fn *ast.FuncDecl, pkg, path string, fset *token.FileSet, want map[s
 			continue
 		}
 		hits = append(hits, Hit{
-			Pkg:     pkg,
-			File:    path,
-			Func:    name,
-			Keyword: kw,
-			Args:    fields[1:],
-			Pos:     fset.Position(c.Slash),
+			Pkg:          pkg,
+			File:         path,
+			Func:         funcName,
+			Keyword:      kw,
+			Args:         fields[1:],
+			Pos:          fset.Position(c.Slash),
+			PackageLevel: packageLevel,
 		})
 	}
 	return hits

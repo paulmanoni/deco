@@ -4,6 +4,16 @@ All notable changes to **deco** are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.18.0] - 2026-09-28
+
+### Added
+
+- `transpiler.Scan` also surfaces directives on a file's PACKAGE doc comment
+  (`Hit.PackageLevel`, `Func` empty) — package-scoped metadata such as a
+  module name or route prefix for downstream code generators. Purely
+  additive: function hits are unchanged, and the keyword filter applies to
+  package-level hits equally.
+
 ## [0.17.1] - 2026-09-28
 
 ### Added
@@ -312,6 +322,7 @@ All notable changes to **deco** are documented here. The format is based on
 - Clear `file:line` errors for unknown / wrong-arity decorators and methods.
 - Three-signature example; installable with `go install`.
 
+[0.18.0]: https://github.com/paulmanoni/deco/releases/tag/v0.18.0
 [0.17.1]: https://github.com/paulmanoni/deco/releases/tag/v0.17.1
 [0.17.0]: https://github.com/paulmanoni/deco/releases/tag/v0.17.0
 [0.16.0]: https://github.com/paulmanoni/deco/releases/tag/v0.16.0
