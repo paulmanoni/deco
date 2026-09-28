@@ -243,10 +243,11 @@ func Add(a, b int) int { return a + b }
 - **Bare name** (`//deco:wrap logged`) — resolves to a decorator in the same
   package.
 - **Qualified name** (`//deco:wrap mw.Logged`) — a decorator from another
-  package, in your module or an external dependency. deco finds the package
-  automatically (it matches `mw` against your module's packages via
-  `go list`), reads its source to arity-check the reference and to fuse
-  middleware factories, so this usually just works:
+  package: one of your module's packages, or an **external library** where
+  `go get` alone is enough (deco matches `mw` against your module's packages,
+  then your go.mod's direct dependencies — no import statement anywhere and
+  no directive needed). It reads the package's source to arity-check the
+  reference and to fuse middleware factories, so this usually just works:
 
   ```go
   //deco:wrap mw.Logged
@@ -254,9 +255,9 @@ func Add(a, b int) int { return a + b }
   func Handler(w http.ResponseWriter, r *http.Request) { ... }
   ```
 
-  Add a `//deco:import` directive only when auto-resolution can't decide — an
-  ambiguous package name, or a decorator in an external module that nothing in
-  your code imports:
+  Add a `//deco:import` directive only when auto-resolution can't decide —
+  several packages in scope share the name, or the decorator lives in an
+  indirect dependency:
 
   ```go
   //deco:import "github.com/you/mw"           // or: //deco:import alias "github.com/you/mw"

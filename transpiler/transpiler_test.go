@@ -337,6 +337,52 @@ func F(x int) int { return x }
 	}
 }
 
+// TestExternalLibraryDecorator: a decorator from an EXTERNAL module resolves
+// with nothing but the go.mod requirement — no import in any source file and
+// no //deco:import directive — and, being a factory, fuses. The external
+// module is simulated hermetically with a replace directive.
+func TestExternalLibraryDecorator(t *testing.T) {
+	root, err := filepath.Abs("..")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	lib := t.TempDir()
+	writeFile(t, filepath.Join(lib, "go.mod"),
+		"module example.com/mwlib\n\ngo 1.27.1\n\nrequire github.com/paulmanoni/deco v0.0.0\n")
+	writeFile(t, filepath.Join(lib, "mwlib.go"), `package mwlib
+
+import "github.com/paulmanoni/deco/decorators"
+
+func Traced() decorators.Middleware { return func(p func()) { p() } }
+`)
+
+	app := t.TempDir()
+	writeFile(t, filepath.Join(app, "go.mod"),
+		"module extapp\n\ngo 1.27.1\n\nrequire (\n\texample.com/mwlib v0.0.0\n\tgithub.com/paulmanoni/deco v0.0.0\n)\n\n"+
+			"replace example.com/mwlib => "+lib+"\n\nreplace github.com/paulmanoni/deco => "+root+"\n")
+	writeFile(t, filepath.Join(app, "app.go"), `package app
+
+//deco:wrap mwlib.Traced
+func Double(x int) int { return x * 2 }
+`)
+	if err := Generate(app); err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	gen := readFile(t, filepath.Join(app, "app_gen.go"))
+	for _, want := range []string{
+		`"example.com/mwlib"`, // auto-resolved import, no //deco:import needed
+		"var doubleImplMWs = []decorators.Middleware{mwlib.Traced()}",
+	} {
+		if !strings.Contains(gen, want) {
+			t.Errorf("external-library output missing %q:\n%s", want, gen)
+		}
+	}
+	if out, err := goBuild(app); err != nil {
+		t.Fatalf("external-library module does not compile: %v\n%s", err, out)
+	}
+}
+
 // TestMixedStackFusesFactoryRuns: wrap-style decorators still nest, but a run
 // of consecutive factories inside the stack collapses into ONE
 // decorators.Chain layer.

@@ -21,6 +21,12 @@ All notable changes to **deco** are documented here. The format is based on
   cannot read, a package-level `var` decorator, or declarations that disagree
   across build tags fall back to the previous unchecked wrap-style behaviour,
   so nothing that worked before stops working.
+- **Seamless external-library imports.** Selector auto-resolution now also
+  covers the go.mod's DIRECT dependencies (enumerated lazily via
+  `go mod edit -json` + `go list`, cached): a decorator library needs only a
+  `go get` — no import statement in any source file and no `//deco:import`
+  directive. The directive remains for ambiguous names and indirect
+  dependencies.
 
 ## [0.15.0] - 2026-09-28
 

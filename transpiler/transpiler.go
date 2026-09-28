@@ -397,7 +397,17 @@ func (r importResolver) resolve(sel string, fileImports map[string]string) (line
 	}
 	switch paths := r.modPkgs[sel]; len(paths) {
 	case 0:
-		return "", false, false
+		// Not a module package: fall through to the module's direct
+		// dependencies, so a decorator library only needs a `go get` — no
+		// import anywhere and no //deco:import directive.
+		switch paths := depIndexFor(r.root).byName[sel]; len(paths) {
+		case 0:
+			return "", false, false
+		case 1:
+			return strconv.Quote(paths[0]), true, false
+		default:
+			return "", false, true
+		}
 	case 1:
 		return strconv.Quote(paths[0]), true, false
 	default:
@@ -420,6 +430,9 @@ func (r importResolver) funcsOf(importPath string) map[string]funcInfo {
 	r.pkgFuncs[importPath] = m // cache up front; failures stay empty (no retry)
 
 	pkgDir, ok := r.dirByPath[importPath]
+	if !ok {
+		pkgDir, ok = depIndexFor(r.root).dirByPath[importPath]
+	}
 	if !ok && r.root != "" {
 		cmd := exec.Command("go", "list", "-e", "-find", "-f", "{{.Dir}}", importPath)
 		cmd.Dir = r.root
@@ -1137,6 +1150,71 @@ func moduleIndexFor(dir string) *moduleIndex {
 		idx.byName[name] = append(idx.byName[name], path)
 		if pkgDir != "" {
 			idx.dirByPath[path] = pkgDir
+		}
+	}
+	return idx
+}
+
+// depIndexCache memoises, per module root, the package index of the module's
+// DIRECT dependencies — built lazily, only when a selector misses every
+// cheaper layer, so most runs never pay for it.
+var depIndexCache = map[string]*moduleIndex{}
+
+// depIndexFor enumerates the packages of the module's direct (non-indirect)
+// requirements by name and directory, so a qualified decorator from an
+// external library resolves with no import and no //deco:import directive —
+// `go get` alone is enough. Best-effort: no module, no toolchain, or an
+// undownloaded dependency simply leaves the index empty (the caller then
+// reports the usual //deco:import guidance).
+func depIndexFor(root string) *moduleIndex {
+	idx := &moduleIndex{byName: map[string][]string{}, dirByPath: map[string]string{}}
+	if root == "" {
+		return idx
+	}
+	if m, ok := depIndexCache[root]; ok {
+		return m
+	}
+	depIndexCache[root] = idx // cache up front; failures stay empty (no retry)
+
+	// Direct requires only, from go.mod itself (fast, offline).
+	cmd := exec.Command("go", "mod", "edit", "-json")
+	cmd.Dir = root
+	out, err := cmd.Output()
+	if err != nil {
+		return idx
+	}
+	var mod struct {
+		Require []struct {
+			Path     string
+			Indirect bool
+		}
+	}
+	if err := json.Unmarshal(out, &mod); err != nil {
+		return idx
+	}
+	for _, req := range mod.Require {
+		if req.Indirect {
+			continue
+		}
+		cmd := exec.Command("go", "list", "-e", "-find", "-f", "{{.Name}}|{{.ImportPath}}|{{.Dir}}", req.Path+"/...")
+		cmd.Dir = root
+		out, err := cmd.Output()
+		if err != nil {
+			continue
+		}
+		for line := range strings.SplitSeq(strings.TrimSpace(string(out)), "\n") {
+			name, rest, ok := strings.Cut(line, "|")
+			if !ok || name == "" || name == "main" {
+				continue
+			}
+			path, pkgDir, _ := strings.Cut(rest, "|")
+			if path == "" {
+				continue
+			}
+			idx.byName[name] = append(idx.byName[name], path)
+			if pkgDir != "" {
+				idx.dirByPath[path] = pkgDir
+			}
 		}
 	}
 	return idx
