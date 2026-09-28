@@ -40,6 +40,7 @@ export default defineConfig({
             { text: 'Writing decorators', link: '/guide/writing-decorators' },
             { text: 'Methods', link: '/guide/methods' },
             { text: 'Performance', link: '/guide/performance' },
+            { text: 'Using deco in your own library', link: '/guide/embedding' },
           ],
         },
       ],
