@@ -2,6 +2,7 @@ package transpiler
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -181,6 +182,97 @@ func Fact(n int) int {
 
 // TestCustomAnnotation checks WithAnnotation: a custom keyword is honoured, and
 // the default keyword does not match it.
+// TestMethodDecorators covers method support: the method is renamed in place
+// (receiver kept), the chain is built over the METHOD EXPRESSION so plain
+// function decorators work unchanged, the wrapper is a same-signature method
+// forwarding the receiver, chain vars are qualified by receiver type (two
+// types may share a method name), and an unnamed receiver gets a synthesised
+// name. Then: idempotency, and the generated package must actually compile.
+func TestMethodDecorators(t *testing.T) {
+	dir := t.TempDir()
+	src := `package p
+
+func logged[F any](fn F) F { return fn }
+
+type Service struct{ n int }
+
+//deco:wrap logged
+func (s *Service) Do(x int) int { return s.n + x }
+
+type Job struct{}
+
+//deco:wrap logged
+func (Job) Do(x int) int { return x * 2 }
+`
+	writeFile(t, filepath.Join(dir, "code.go"), src)
+	if err := Generate(dir); err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	orig := readFile(t, filepath.Join(dir, "code.go"))
+	gen := readFile(t, filepath.Join(dir, "code_gen.go"))
+
+	// The rename keeps the receiver and stamps the marker.
+	for _, want := range []string{
+		"//deco:wrapper Do\nfunc (s *Service) doImpl(x int) int",
+		"//deco:wrapper Do\nfunc (Job) doImpl(x int) int",
+	} {
+		if !strings.Contains(orig, want) {
+			t.Errorf("transformed original missing %q:\n%s", want, orig)
+		}
+	}
+
+	// The chain is built over the method expression; chain vars are qualified
+	// by receiver type; the wrapper is a method that forwards the receiver.
+	for _, want := range []string{
+		"var serviceDoDecorated = logged((*Service).doImpl)",
+		"func (s *Service) Do(x int) int",
+		"return serviceDoDecorated(s, x)",
+		"var jobDoDecorated = logged(Job.doImpl)",
+		"func (recv Job) Do(x int) int",
+		"return jobDoDecorated(recv, x)",
+	} {
+		if !strings.Contains(gen, want) {
+			t.Errorf("generated wrapper missing %q:\n%s", want, gen)
+		}
+	}
+
+	// Idempotent: a second run must not rename again or change any output.
+	if err := Generate(dir); err != nil {
+		t.Fatalf("Generate (rerun): %v", err)
+	}
+	if got := readFile(t, filepath.Join(dir, "code.go")); got != orig {
+		t.Errorf("rerun changed the original:\n%s", got)
+	}
+	if got := readFile(t, filepath.Join(dir, "code_gen.go")); got != gen {
+		t.Errorf("rerun changed the wrapper:\n%s", got)
+	}
+
+	// The result must compile.
+	writeFile(t, filepath.Join(dir, "go.mod"), "module methodtest\n\ngo 1.27.1\n")
+	if out, err := goBuild(dir); err != nil {
+		t.Fatalf("generated package does not compile: %v\n%s", err, out)
+	}
+}
+
+// TestMethodGenericReceiverRejected: a type parameter prevents the
+// package-level method expression the chain needs, so it must be a clear error.
+func TestMethodGenericReceiverRejected(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "code.go"), `package p
+
+func logged[F any](fn F) F { return fn }
+
+type Box[T any] struct{ v T }
+
+//deco:wrap logged
+func (b *Box[T]) Get() T { return b.v }
+`)
+	err := Generate(dir)
+	if err == nil || !strings.Contains(err.Error(), "generic receivers are not supported") {
+		t.Fatalf("expected a generic-receiver error, got: %v", err)
+	}
+}
+
 // TestWrapDirective checks the primary //deco:wrap directive form: it is
 // recognised by default, coexists with the //@decorate alias in one doc group,
 // survives a custom alias keyword, and never collides with the //deco:wrapper
@@ -276,4 +368,12 @@ func readFile(t *testing.T, path string) string {
 		t.Fatal(err)
 	}
 	return string(b)
+}
+
+// goBuild compiles the package in dir with the real toolchain.
+func goBuild(dir string) (string, error) {
+	cmd := exec.Command("go", "build", "./...")
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	return string(out), err
 }

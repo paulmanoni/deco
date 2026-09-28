@@ -17,4 +17,10 @@ func main() {
 	fmt.Println("\n== MinMax (func(...int) (int, int)) ==")
 	lo, hi := MinMax(3, 1, 4, 1, 5, 9, 2, 6)
 	fmt.Printf("MinMax(3,1,4,1,5,9,2,6) = lo:%d hi:%d\n", lo, hi)
+
+	fmt.Println("\n== Counter (methods: pointer and value receivers) ==")
+	c := &Counter{}
+	c.Add(2)
+	fmt.Println("c.Add(3) =", c.Add(3))
+	fmt.Println("c.Total() =", c.Total())
 }

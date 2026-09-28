@@ -1,6 +1,6 @@
 // Package transpiler implements the comment-hosted decorator transpiler.
 //
-// The model, in one breath: a user annotates any plain function with
+// The model, in one breath: a user annotates any function or method with
 // //deco:wrap doc comments (or the //@decorate alias); we rename that
 // function to an unexported
 // <name>Impl and generate a brand-new function with the original name and an
@@ -21,8 +21,14 @@
 //  5. Emit a fully type-safe wrapper into <file>_gen.go, formatted with
 //     go/format and carrying the standard "DO NOT EDIT" header.
 //
-// Only plain functions are supported in v1; methods (with receivers) are
-// detected and rejected with a clear file:line error.
+// Methods are supported too: the method is renamed in place (receiver kept)
+// and the chain is built over the METHOD EXPRESSION — e.g.
+// logged((*Service).doImpl) — a plain func value whose first parameter is the
+// receiver, so any function decorator wraps methods unchanged; the generated
+// wrapper is a same-signature method that forwards the receiver. Generic
+// receivers are the one exclusion (a type parameter prevents the
+// package-level method expression) and are rejected with a clear file:line
+// error.
 //
 // # Using it as a library
 //
@@ -137,7 +143,7 @@ type decorator struct {
 	selectors []string // package selectors referenced (head + args), e.g. ["decorators"]
 }
 
-// job is one function that needs a generated wrapper.
+// job is one function or method that needs a generated wrapper.
 type job struct {
 	wrapperName string        // the original, public-facing name (e.g. Add)
 	implName    string        // the renamed implementation (e.g. addImpl)
@@ -146,7 +152,18 @@ type job struct {
 	srcFile     string        // absolute path of the source file
 	decl        *ast.FuncDecl // the declaration (used for rename positions)
 	needsRename bool          // false when a marker shows the rename already happened
+
+	// Method-only fields (empty for plain functions). The chain is built over
+	// the METHOD EXPRESSION recvExpr.implName — a plain func value whose first
+	// parameter is the receiver — so any function decorator works unchanged.
+	recvSig  string // rendered receiver, e.g. "s *Service"
+	recvName string // the receiver identifier the wrapper forwards, e.g. "s"
+	recvType string // the receiver's base type name, e.g. "Service" (for the chain var)
+	recvExpr string // method-expression qualifier, e.g. "(*Service)" or "Service"
 }
+
+// isMethod reports whether the job wraps a method rather than a plain function.
+func (j job) isMethod() bool { return j.recvSig != "" }
 
 // Output is one file's worth of generated content, keyed by the absolute path
 // it represents inside the package: either a transformed (renamed) original or
@@ -379,10 +396,6 @@ func analyze(dir string, cfg config) (*analysis, error) {
 				continue
 			}
 			pos := fset.Position(fn.Pos())
-			if fn.Recv != nil {
-				return nil, fmt.Errorf("%s:%d: deco v1 supports plain functions only; "+
-					"%q has a receiver and cannot be decorated", pos.Filename, pos.Line, fn.Name.Name)
-			}
 
 			for _, d := range decs {
 				if err := validateDecorator(d, funcArity, fileImports[path], resolver, pos.Filename); err != nil {
@@ -391,6 +404,11 @@ func analyze(dir string, cfg config) (*analysis, error) {
 			}
 
 			j := job{decorators: decs, fn: fn.Type, srcFile: path, decl: fn}
+			if fn.Recv != nil {
+				if err := fillReceiver(&j, fn, fset); err != nil {
+					return nil, err
+				}
+			}
 			if wrapperOverride != "" {
 				// Already renamed on a previous (on-disk) run; the marker carries
 				// the public name and the current decl name is the impl.
@@ -919,6 +937,71 @@ func moduleRoot(dir string) string {
 	return filepath.Dir(gomod)
 }
 
+// fillReceiver populates a job's method fields from the declaration's
+// receiver. The decorator chain is built over the METHOD EXPRESSION
+// (e.g. (*Service).doImpl), whose type is a plain function taking the receiver
+// as its first parameter — so any function decorator works on methods
+// unchanged. Generic receivers are rejected: a type parameter prevents the
+// package-level method expression the chain needs.
+func fillReceiver(j *job, fn *ast.FuncDecl, fset *token.FileSet) error {
+	field := fn.Recv.List[0]
+	base := field.Type
+	star := false
+	if s, ok := base.(*ast.StarExpr); ok {
+		star, base = true, s.X
+	}
+	ident, ok := base.(*ast.Ident)
+	if !ok {
+		pos := fset.Position(fn.Pos())
+		return fmt.Errorf("%s:%d: cannot decorate method %q: generic receivers are not supported "+
+			"(the package-level decorator chain is built over a method expression, "+
+			"which a type parameter prevents)", pos.Filename, pos.Line, fn.Name.Name)
+	}
+
+	typeStr := typeString(field.Type, fset)
+	name := ""
+	if len(field.Names) == 1 && field.Names[0].Name != "_" {
+		name = field.Names[0].Name
+	} else {
+		// An unnamed (or blank) receiver still needs a name so the wrapper can
+		// forward it; pick one that no declared parameter uses.
+		name = freshName("recv", declaredParamNames(fn.Type))
+	}
+
+	j.recvSig = name + " " + typeStr
+	j.recvName = name
+	j.recvType = ident.Name
+	if star {
+		j.recvExpr = "(" + typeStr + ")" // (*Service).doImpl
+	} else {
+		j.recvExpr = typeStr // Service.doImpl
+	}
+	return nil
+}
+
+// declaredParamNames returns the set of parameter names a signature declares.
+func declaredParamNames(fn *ast.FuncType) map[string]bool {
+	names := map[string]bool{}
+	if fn.Params == nil {
+		return names
+	}
+	for _, field := range fn.Params.List {
+		for _, n := range field.Names {
+			names[n.Name] = true
+		}
+	}
+	return names
+}
+
+// freshName returns base, or base0, base1, … — the first not present in used.
+func freshName(base string, used map[string]bool) string {
+	name := base
+	for i := 0; used[name]; i++ {
+		name = fmt.Sprintf("%s%d", base, i)
+	}
+	return name
+}
+
 // renameBytes returns the source file's bytes with each decorated function
 // renamed to its impl name and a wrapper marker stamped above it. It edits text
 // directly (using AST node offsets) instead of reprinting the AST, so untouched
@@ -996,7 +1079,7 @@ import (
 // only once rather than on every call.
 var {{.ChainVar}} = {{.Chain}}
 
-func {{.WrapperName}}({{.Params}}){{if .Results}} {{.Results}}{{end}} {
+func {{if .Recv}}({{.Recv}}) {{end}}{{.WrapperName}}({{.Params}}){{if .Results}} {{.Results}}{{end}} {
 	{{.Ret}}{{.ChainVar}}({{.CallArgs}})
 }
 {{end}}`))
@@ -1004,11 +1087,12 @@ func {{.WrapperName}}({{.Params}}){{if .Results}} {{.Results}}{{end}} {
 type genFunc struct {
 	WrapperName string
 	ChainVar    string // package-level var holding the built chain
+	Recv        string // rendered receiver for a method wrapper ("" for functions)
 	Params      string
 	Results     string
 	Ret         string // "return " or ""
 	Chain       string // decorator chain expression over the impl
-	CallArgs    string // forwarded argument list
+	CallArgs    string // forwarded argument list (receiver first for methods)
 }
 
 type genData struct {
@@ -1033,6 +1117,18 @@ func genBytes(srcPath, pkg string, jobs []job, imports []string, fset *token.Fil
 			Chain:       buildChain(j),
 			CallArgs:    callArgs,
 		}
+		if j.isMethod() {
+			// The wrapper is a method; the chain (built over the method
+			// expression) takes the receiver as its first argument. The chain
+			// var is qualified by the receiver type, since methods of the same
+			// name may exist on several types in one package.
+			gf.Recv = j.recvSig
+			gf.ChainVar = lowerFirstWord(j.recvType) + j.wrapperName + "Decorated"
+			gf.CallArgs = j.recvName
+			if callArgs != "" {
+				gf.CallArgs = j.recvName + ", " + callArgs
+			}
+		}
 		if j.fn.Results != nil && len(j.fn.Results.List) > 0 {
 			gf.Ret = "return "
 		}
@@ -1055,11 +1151,18 @@ func genBytes(srcPath, pkg string, jobs []job, imports []string, fset *token.Fil
 // first (topmost) annotation is the outermost. Leading arguments are passed
 // before the wrapped function, per the contract.
 //
-// For //@decorate logged then //@decorate timing("slow") over Add, this yields
+// For //deco:wrap logged then //deco:wrap timing("slow") over Add, this yields
 //
 //	logged(timing("slow", addImpl))
+//
+// For a method the innermost expression is the METHOD EXPRESSION, e.g.
+// logged((*Service).doImpl) — a plain func value whose first parameter is the
+// receiver.
 func buildChain(j job) string {
 	expr := j.implName
+	if j.isMethod() {
+		expr = j.recvExpr + "." + j.implName
+	}
 	for _, d := range slices.Backward(j.decorators) {
 		if d.args == "" {
 			expr = fmt.Sprintf("%s(%s)", d.name, expr)
@@ -1161,9 +1264,17 @@ func implName(name string) string {
 	if name == "" {
 		return "impl"
 	}
+	return lowerFirstWord(name) + "Impl"
+}
+
+// lowerFirstWord lower-cases a name's first rune (Service -> service).
+func lowerFirstWord(name string) string {
+	if name == "" {
+		return name
+	}
 	r := []rune(name)
 	r[0] = lower(r[0])
-	return string(r) + "Impl"
+	return string(r)
 }
 
 func lower(r rune) rune {

@@ -4,6 +4,28 @@ All notable changes to **deco** are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.13.0] - 2026-09-28
+
+### Added
+
+- **Method decorators.** `//deco:wrap` now works on methods — pointer or value
+  receiver, exported or not. The method is renamed in place (receiver kept) and
+  the decorator chain is built over the method expression
+  (`logged((*Counter).addImpl)`), a plain function value whose first parameter
+  is the receiver — so every existing function decorator, including
+  `decorators.Func`/`FuncValues`, wraps methods unchanged (`FuncValues` sees
+  the receiver at `args[0]`). The generated wrapper is a real method with the
+  original signature, preserving interface satisfaction. Chain vars are
+  qualified by receiver type, so same-named methods on different types coexist.
+- `./example` gained a decorated-methods `Counter` (pointer and value
+  receivers, bare and qualified decorators).
+
+### Limitations
+
+- Generic receivers (`func (b *Box[T]) …`) cannot be decorated — a type
+  parameter prevents the package-level method expression — and are rejected
+  with a clear `file:line` error.
+
 ## [0.12.0] - 2026-09-28
 
 ### Added
@@ -203,6 +225,7 @@ All notable changes to **deco** are documented here. The format is based on
 - Clear `file:line` errors for unknown / wrong-arity decorators and methods.
 - Three-signature example; installable with `go install`.
 
+[0.13.0]: https://github.com/paulmanoni/deco/releases/tag/v0.13.0
 [0.12.0]: https://github.com/paulmanoni/deco/releases/tag/v0.12.0
 [0.11.0]: https://github.com/paulmanoni/deco/releases/tag/v0.11.0
 [0.10.0]: https://github.com/paulmanoni/deco/releases/tag/v0.10.0

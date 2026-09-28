@@ -309,7 +309,7 @@ func displayPath(abs string) string {
 func usage(w io.Writer) {
 	fmt.Fprint(w, `deco brings Python-style decorators to Go via code generation.
 
-Annotate any plain function with doc comments:
+Annotate any function or method with doc comments:
 
 	//deco:wrap logged
 	//deco:wrap timing("slow")

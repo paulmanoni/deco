@@ -9,9 +9,9 @@
 
 # deco
 
-Python-style decorators for Go, via code generation. Annotate any function with
-a doc comment and `deco` wraps it — every caller of the original name
-transparently flows through your decorators.
+Python-style decorators for Go, via code generation. Annotate any function or
+method with a doc comment and `deco` wraps it — every caller of the original
+name transparently flows through your decorators.
 
 ```go
 //deco:wrap logged
@@ -221,10 +221,34 @@ func Add(a, b int) int { return a + b }
 Then `deco run .` (or `build` / `generate`). That's it — callers of `Add` or
 `Handler` now go through the decorators.
 
+### Methods
+
+Methods decorate exactly like functions — pointer or value receiver, exported
+or not:
+
+```go
+type Counter struct{ total int }
+
+//deco:wrap logged
+func (c *Counter) Add(n int) int { c.total += n; return c.total }
+```
+
+Under the hood the chain is built over the **method expression** —
+`logged((*Counter).addImpl)` — a plain function value whose first parameter is
+the receiver. So every function decorator works on methods unchanged:
+`decorators.Func` sees one extra leading argument (the receiver), and a
+request-aware `decorators.FuncValues` middleware finds the receiver at
+`args[0]`. The generated wrapper is a real method with the original signature,
+so interface satisfaction is preserved.
+
+The one exclusion is a **generic receiver** (`func (b *Box[T]) …`): a type
+parameter prevents the package-level method expression, and deco reports a
+clear `file:line` error.
+
 ## Examples
 
 ```sh
-deco run ./example          # three different signatures, each decorated
+deco run ./example          # different signatures + decorated methods
 deco run ./examples/router  # multi-package HTTP router; the router itself is a decorator
 ```
 
@@ -325,7 +349,10 @@ helper.
   keyword via `-annotation`) is an alias. Both may appear in the same doc
   comment and stack together.
 - Decorators are applied once, at package init (like Python's `fn = a(b(fn))`).
-- Methods (functions with receivers) are not supported in v1.
+- Generic receivers (`func (b *Box[T]) …`) cannot be decorated — a type
+  parameter prevents the package-level method expression the chain is built
+  over. Generic *decorators* (the `[F any]` shape) are the normal case and
+  unaffected.
 - Use `decorators.Func` to wrap a call, or `decorators.FuncValues` when you need
   to read or modify the arguments/return values. Both avoid hand-written
   reflection.
