@@ -2,9 +2,9 @@ package transpiler
 
 import (
 	"os"
-	"time"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func writeScanFile(t *testing.T, dir, name, body string) {
