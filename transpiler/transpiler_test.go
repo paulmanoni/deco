@@ -182,6 +182,153 @@ func Fact(n int) int {
 
 // TestCustomAnnotation checks WithAnnotation: a custom keyword is honoured, and
 // the default keyword does not match it.
+// TestFactoryFusion covers the fused middleware path: when every decorator on
+// a function is a middleware FACTORY (returns decorators.Middleware), the
+// wrapper runs a package-level []Middleware slice over a typed call with no
+// reflection — for functions with results, void functions, and methods. The
+// generated package must compile against the real decorators package.
+func TestFactoryFusion(t *testing.T) {
+	dir := t.TempDir()
+	src := `package p
+
+import "github.com/paulmanoni/deco/decorators"
+
+func traced() decorators.Middleware { return func(p func()) { p() } }
+
+func tagged(label string) decorators.Middleware {
+	_ = label
+	return func(p func()) { p() }
+}
+
+//deco:wrap traced
+//deco:wrap tagged("hot")
+func Add(a, b int) (int, error) { return a + b, nil }
+
+//deco:wrap traced
+func Ping() {}
+
+type Svc struct{ n int }
+
+//deco:wrap traced
+func (s *Svc) Bump(d int) int { s.n += d; return s.n }
+`
+	writeFile(t, filepath.Join(dir, "code.go"), src)
+	if err := Generate(dir); err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	gen := readFile(t, filepath.Join(dir, "code_gen.go"))
+
+	for _, want := range []string{
+		// function with results: named results assigned inside the typed call
+		`var addImplMWs = []decorators.Middleware{traced(), tagged("hot")}`,
+		"func Add(a, b int) (r0 int, r1 error)",
+		"decorators.Run(addImplMWs, func() { r0, r1 = addImpl(a, b) })",
+		// void function: no results, no return
+		"decorators.Run(pingImplMWs, func() { pingImpl() })",
+		// method: receiver call, chain var qualified by receiver type
+		"var svcBumpMWs = []decorators.Middleware{traced()}",
+		"func (s *Svc) Bump(d int) (r0 int)",
+		"decorators.Run(svcBumpMWs, func() { r0 = s.bumpImpl(d) })",
+	} {
+		if !strings.Contains(gen, want) {
+			t.Errorf("fused wrapper missing %q:\n%s", want, gen)
+		}
+	}
+	if strings.Contains(gen, "Decorated") {
+		t.Errorf("all-factory stacks must not build a reflective chain var:\n%s", gen)
+	}
+
+	// The generated package must compile against the real decorators package.
+	root, err := filepath.Abs("..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(dir, "go.mod"),
+		"module fusetest\n\ngo 1.27.1\n\nrequire github.com/paulmanoni/deco v0.0.0\n\nreplace github.com/paulmanoni/deco => "+root+"\n")
+	if out, err := goBuild(dir); err != nil {
+		t.Fatalf("fused package does not compile: %v\n%s", err, out)
+	}
+}
+
+// TestMixedStackFusesFactoryRuns: wrap-style decorators still nest, but a run
+// of consecutive factories inside the stack collapses into ONE
+// decorators.Chain layer.
+func TestMixedStackFusesFactoryRuns(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "code.go"), `package p
+
+import "github.com/paulmanoni/deco/decorators"
+
+func wrapd[F any](fn F) F { return fn }
+
+func traced() decorators.Middleware { return func(p func()) { p() } }
+
+func tagged(label string) decorators.Middleware {
+	_ = label
+	return func(p func()) { p() }
+}
+
+//deco:wrap wrapd
+//deco:wrap traced
+//deco:wrap tagged("x")
+func Mul(a, b int) int { return a * b }
+`)
+	if err := Generate(dir); err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	gen := readFile(t, filepath.Join(dir, "code_gen.go"))
+	want := "var mulImplDecorated = wrapd(decorators.Chain(mulImpl, traced(), tagged(\"x\")))"
+	if !strings.Contains(gen, want) {
+		t.Errorf("mixed stack missing fused chain %q:\n%s", want, gen)
+	}
+}
+
+// TestFactoryAliasedImport: a factory whose file imports the decorators
+// package under an alias is still detected, and the generated file reuses
+// that alias.
+func TestFactoryAliasedImport(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "code.go"), `package p
+
+import mw "github.com/paulmanoni/deco/decorators"
+
+func traced() mw.Middleware { return func(p func()) { p() } }
+
+//deco:wrap traced
+func Add(a, b int) int { return a + b }
+`)
+	if err := Generate(dir); err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	gen := readFile(t, filepath.Join(dir, "code_gen.go"))
+	for _, want := range []string{"[]mw.Middleware{traced()}", "mw.Run(addImplMWs,"} {
+		if !strings.Contains(gen, want) {
+			t.Errorf("aliased fusion missing %q:\n%s", want, gen)
+		}
+	}
+}
+
+// TestLocalMiddlewareTypeIsNotAFactory: a same-named LOCAL Middleware type
+// must not trigger fusion — deco's Chain/Run take deco's type, so fusing over
+// a lookalike would not compile. The reference falls back to the wrap-style
+// arity rules (and here fails them, with the factory shape mentioned).
+func TestLocalMiddlewareTypeIsNotAFactory(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "code.go"), `package p
+
+type Middleware func(func())
+
+func myfac() Middleware { return func(p func()) { p() } }
+
+//deco:wrap myfac
+func F() {}
+`)
+	err := Generate(dir)
+	if err == nil || !strings.Contains(err.Error(), "wrong arity") {
+		t.Fatalf("expected a wrap-style arity error for the local lookalike, got: %v", err)
+	}
+}
+
 // TestMethodDecorators covers method support: the method is renamed in place
 // (receiver kept), the chain is built over the METHOD EXPRESSION so plain
 // function decorators work unchanged, the wrapper is a same-signature method

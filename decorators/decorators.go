@@ -154,6 +154,93 @@ func toResults(t reflect.Type, results []any) []reflect.Value {
 	return out
 }
 
+// Middleware is the FUSED form of a decorator's behaviour: the body you would
+// hand to [Func], detached from any particular wrapped function. A decorator
+// written as a middleware FACTORY —
+//
+//	func logged() decorators.Middleware {
+//		return func(proceed func()) { ...before...; proceed(); ...after... }
+//	}
+//
+// lets a stack of decorators share ONE wrapper layer (via [Chain]) or run with
+// no reflection at all (via [Run] in a typed wrapper, which is what deco's
+// generated code does when every decorator on a function is a factory),
+// instead of paying one reflective boxing per stacked decorator.
+//
+// proceed must be called synchronously (not from another goroutine). Calling
+// it more than once re-runs the rest of the chain (retries); not calling it
+// short-circuits.
+type Middleware func(proceed func())
+
+// Chain wraps fn ONCE and runs every middleware inside that single reflective
+// layer, so a stack of N decorators costs one argument boxing instead of N.
+// mws[0] is the OUTERMOST middleware (matching top-to-bottom annotation
+// order). If no middleware proceeds to the function, the call returns the
+// zero value for each result, exactly like [Func].
+func Chain[F any](fn F, mws ...Middleware) F {
+	if len(mws) == 0 {
+		return fn
+	}
+	v := reflect.ValueOf(fn)
+	t := v.Type()
+	if t.Kind() != reflect.Func {
+		panic(fmt.Sprintf("deco: decorator applied to non-function %s", t))
+	}
+	wrapped := reflect.MakeFunc(t, func(in []reflect.Value) []reflect.Value {
+		var out []reflect.Value
+		Run(mws, func() { out = callThrough(v, in) })
+		if out == nil {
+			out = make([]reflect.Value, t.NumOut())
+			for i := range out {
+				out[i] = reflect.Zero(t.Out(i))
+			}
+		}
+		return out
+	})
+	return wrapped.Interface().(F)
+}
+
+// Run invokes call through mws with no wrapping layers and no reflection:
+// mws[0] runs outermost, call innermost. It is what deco's generated wrappers
+// use when a whole stack is middleware factories —
+//
+//	decorators.Run(addMWs, func() { r0 = addImpl(a, b) })
+//
+// — and is exported so hand-written typed wrappers can do the same. A
+// middleware that skips proceed short-circuits call; one that calls proceed
+// again re-runs everything downstream of it.
+func Run(mws []Middleware, call func()) {
+	if len(mws) == 0 {
+		call()
+		return
+	}
+	r := runner{mws: mws, call: call}
+	r.p = r.proceed
+	r.p()
+}
+
+// runner threads ONE proceed closure through the whole chain, so running N
+// middleware costs O(1) closures rather than one per layer per call.
+type runner struct {
+	mws  []Middleware
+	call func()
+	p    func() // the single bound proceed handed to every middleware
+	next int
+}
+
+func (r *runner) proceed() {
+	i := r.next
+	if i == len(r.mws) {
+		r.call()
+		return
+	}
+	r.next = i + 1
+	// Restore on the way out (even across a recovered panic) so a middleware
+	// that calls proceed again re-runs the chain from this same point.
+	defer func() { r.next = i }()
+	r.mws[i](r.p)
+}
+
 // Logged returns a wrapper that prints a line when the function is entered and
 // another when it returns. It works for any function signature.
 func Logged[F any](fn F) F {

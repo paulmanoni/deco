@@ -47,6 +47,32 @@ func BenchmarkFuncValues(b *testing.B) {
 	}
 }
 
+// BenchmarkChain3 measures three middleware fused into ONE reflective layer —
+// the [Chain] combinator. Depth is (nearly) free: compare with
+// BenchmarkFuncChain3, which pays a boxing per layer.
+func BenchmarkChain3(b *testing.B) {
+	noop := Middleware(func(p func()) { p() })
+	f := Chain(add, noop, noop, noop)
+	for b.Loop() {
+		sink = f(1, 2)
+	}
+}
+
+// BenchmarkRunTyped3 measures the reflection-free path deco's generated
+// wrappers use when every decorator on a function is a middleware factory: a
+// typed closure driven by [Run]. No reflect, no boxing, any stack depth.
+func BenchmarkRunTyped3(b *testing.B) {
+	noop := Middleware(func(p func()) { p() })
+	mws := []Middleware{noop, noop, noop}
+	f := func(a, c int) (r0 int) { // shaped exactly like a generated wrapper
+		Run(mws, func() { r0 = add(a, c) })
+		return
+	}
+	for b.Loop() {
+		sink = f(1, 2)
+	}
+}
+
 // loggedConcrete is a reflection-free decorator specialised to ONE signature.
 // deco happily uses decorators like this — they're the zero-overhead escape
 // hatch for hot paths, at the cost of generality (one per signature shape).

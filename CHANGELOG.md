@@ -4,6 +4,39 @@ All notable changes to **deco** are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.15.0] - 2026-09-28
+
+### Added
+
+- **Fused middleware chains.** A decorator can now be a middleware FACTORY —
+  it returns `decorators.Middleware` instead of wrapping the function
+  (`func logged() decorators.Middleware`). Annotations are unchanged; deco
+  classifies the shape from the signature (exactly the leading args, one
+  `decorators.Middleware` result, resolved to deco's package — a same-named
+  local type never fuses). Then:
+  - an **all-factory stack** compiles to a reflection-free wrapper: a
+    `[]decorators.Middleware` built once at init, run over a typed call via
+    `decorators.Run` — ~52 ns / 4 allocs for a 3-deep stack, versus ~900 ns /
+    21 allocs for three nested `Func` layers (~17×), and depth is ~free;
+  - a **mixed stack** fuses each run of consecutive factories into one
+    reflective layer via `decorators.Chain`, with wrap-style decorators
+    nesting around it as before.
+- `decorators.Middleware`, `decorators.Chain` (whole stack in one wrapper
+  layer) and `decorators.Run` (reflection-free driver, exported for
+  hand-written typed wrappers). `proceed` semantics match `Func`: skip to
+  short-circuit (zero values), call again to retry — a repeated `proceed`
+  re-runs everything downstream, correctly even across a recovered panic.
+- Benchmarks (`BenchmarkChain3`, `BenchmarkRunTyped3`) and fusion tests,
+  including a compile check of fused output against the real decorators
+  package; the `./example` `audited` decorator is now a factory, so
+  `deco run ./example` exercises the fused path for a function and a method.
+
+### Limitations
+
+- Factory detection needs the decorator's signature, so it applies to
+  same-package (bare-name) decorators; a qualified `pkg.Name` decorator is
+  treated as wrap-style for now.
+
 ## [0.14.0] - 2026-09-28
 
 ### Added
@@ -234,6 +267,7 @@ All notable changes to **deco** are documented here. The format is based on
 - Clear `file:line` errors for unknown / wrong-arity decorators and methods.
 - Three-signature example; installable with `go install`.
 
+[0.15.0]: https://github.com/paulmanoni/deco/releases/tag/v0.15.0
 [0.14.0]: https://github.com/paulmanoni/deco/releases/tag/v0.14.0
 [0.13.0]: https://github.com/paulmanoni/deco/releases/tag/v0.13.0
 [0.12.0]: https://github.com/paulmanoni/deco/releases/tag/v0.12.0
