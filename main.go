@@ -30,6 +30,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime/debug"
 	"strconv"
 	"strings"
 
@@ -52,6 +53,11 @@ func main() {
 	ann, sub, rest := splitLeading(os.Args[1:])
 	annotation = ann
 	switch {
+	case sub == "version" && len(rest) == 0:
+		// Print deco's own version first — a stale installed binary silently
+		// ignores newer syntax, so this is the diagnostic — then go's.
+		fmt.Println(decoVersion())
+		os.Exit(passThrough(sub, rest))
 	case isPassThrough(sub):
 		os.Exit(passThrough(sub, rest))
 	case sub == "generate":
@@ -139,6 +145,19 @@ func passThrough(sub string, userArgs []string) int {
 		defer cleanup() // always remove the temp overlay, even on panic/failure
 		overlayPath = path
 		sm = m
+		// go compiles ONLY the .go files listed on the command line, so a
+		// single-file invocation drops the generated wrappers (and sees the
+		// renamed implementations) of a decorated package — it can never
+		// work. Fail loudly with the fix instead of go's "undefined" errors.
+		for _, a := range userArgs {
+			if strings.HasSuffix(a, ".go") && sm.TouchesDir(filepath.Dir(a)) {
+				fmt.Fprintf(os.Stderr,
+					"deco: %s names a single file, but its package is decorated; go compiles only the\n"+
+						"deco: listed files, so the generated wrappers would be missing. Run the package:\n"+
+						"deco:   deco %s %s\n", a, sub, localDir(filepath.Dir(a)))
+				return 1
+			}
+		}
 	}
 
 	cmd := exec.Command("go", buildGoArgs(sub, overlayPath, userArgs)...)
@@ -303,6 +322,27 @@ func displayPath(abs string) string {
 		}
 	}
 	return abs
+}
+
+// localDir renders a package directory the way go's CLI wants it spelled: a
+// relative path gets the ./ prefix that marks it as a directory, not a
+// package path.
+func localDir(dir string) string {
+	if filepath.IsAbs(dir) || strings.HasPrefix(dir, ".") {
+		return dir
+	}
+	return "./" + dir
+}
+
+// decoVersion reports this binary's own module version, in the style of
+// `go version`. A source build (`go run .`, a repo `go build`) has no module
+// version and reports devel.
+func decoVersion() string {
+	v := "devel"
+	if bi, ok := debug.ReadBuildInfo(); ok && bi.Main.Version != "" && bi.Main.Version != "(devel)" {
+		v = bi.Main.Version
+	}
+	return "deco version " + v
 }
 
 // usage prints the top-level help, in the plain style of `go help`.

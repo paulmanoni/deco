@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -272,6 +273,60 @@ func Add(a, b int) int { return a + b }
 	}
 	if out.Len() != 0 {
 		t.Errorf("-l on an up-to-date tree should print nothing, got:\n%s", out.String())
+	}
+}
+
+// TestPassThroughRefusesSingleFileOnDecoratedPackage: `deco run x.go` on a
+// decorated package can never work (go compiles only the listed files, so the
+// generated wrappers are missing) — it must fail with the run-the-package
+// hint instead of go's baffling "undefined" errors. A file in an undecorated
+// package still forwards, keeping go-parity.
+func TestPassThroughRefusesSingleFileOnDecoratedPackage(t *testing.T) {
+	origProvider, origRunner := overlayProvider, runChild
+	defer func() { overlayProvider, runChild = origProvider, origRunner }()
+
+	sm := transpiler.NewSourceMap(nil, []string{mustAbs(t, "example/main_gen.go")}, nil)
+	overlayProvider = func() (string, *transpiler.SourceMap, func(), error) {
+		return "/tmp/fake-overlay.json", sm, func() {}, nil
+	}
+	ran := false
+	runChild = func(cmd *exec.Cmd) error { ran = true; return nil }
+
+	if code := passThrough("run", []string{"example/main.go"}); code != 1 {
+		t.Errorf("single file on decorated package: exit = %d, want 1", code)
+	}
+	if ran {
+		t.Error("go must not be invoked for a refused single-file run")
+	}
+
+	// A file whose package the transpiler didn't touch forwards as normal.
+	if code := passThrough("run", []string{"other/tool.go"}); code != 0 || !ran {
+		t.Errorf("undecorated package: exit = %d, ran = %v; want 0, true", code, ran)
+	}
+}
+
+func mustAbs(t *testing.T, p string) string {
+	t.Helper()
+	a, err := filepath.Abs(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return a
+}
+
+func TestLocalDir(t *testing.T) {
+	for in, want := range map[string]string{
+		"example": "./example", ".": ".", "./x": "./x", "/abs/p": "/abs/p",
+	} {
+		if got := localDir(in); got != want {
+			t.Errorf("localDir(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestDecoVersion(t *testing.T) {
+	if got := decoVersion(); !strings.HasPrefix(got, "deco version ") {
+		t.Errorf("decoVersion() = %q, want a 'deco version …' line", got)
 	}
 }
 

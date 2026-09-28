@@ -15,8 +15,14 @@ deco install ./cmd/foo      # = go install ./cmd/foo
 
 - The compile/run subcommands (`build run test vet install list`) get deco's
   `-overlay`.
-- Any other subcommand (`env`, `version`, `mod`, …) is forwarded verbatim —
-  including future go subcommands.
+- Any other subcommand (`env`, `mod`, …) is forwarded verbatim — including
+  future go subcommands. `deco version` first prints deco's own version, then
+  go's — check it when decorators mysteriously stop applying: a stale
+  installed binary ignores syntax it predates.
+- A `.go` FILE argument to a compile/run subcommand is refused when its
+  package is decorated: go compiles only the listed files, so the generated
+  wrappers can never be present. Run the package directory instead
+  (`deco run ./example`, not `deco run ./example/main.go`).
 - The child inherits your environment and working directory, and deco exits
   with the child's exact exit code, so a failing `deco test` fails CI.
 

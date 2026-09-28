@@ -4,6 +4,19 @@ All notable changes to **deco** are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.17.1] - 2026-09-28
+
+### Added
+
+- `deco version` now prints deco's OWN version (from build info) above go's —
+  the direct diagnostic for a stale installed binary, which silently ignores
+  annotation syntax it predates and runs the program undecorated.
+- A `.go` file argument to a compile/run subcommand is refused with a clear
+  run-the-package hint when its package is decorated: go compiles only the
+  listed files, so the generated wrappers can never be present and the run
+  failed with baffling `undefined` errors. Files in undecorated packages
+  forward as before (go-parity).
+
 ## [0.17.0] - 2026-09-28
 
 ### Added
@@ -299,6 +312,7 @@ All notable changes to **deco** are documented here. The format is based on
 - Clear `file:line` errors for unknown / wrong-arity decorators and methods.
 - Three-signature example; installable with `go install`.
 
+[0.17.1]: https://github.com/paulmanoni/deco/releases/tag/v0.17.1
 [0.17.0]: https://github.com/paulmanoni/deco/releases/tag/v0.17.0
 [0.16.0]: https://github.com/paulmanoni/deco/releases/tag/v0.16.0
 [0.15.0]: https://github.com/paulmanoni/deco/releases/tag/v0.15.0

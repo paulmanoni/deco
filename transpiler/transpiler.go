@@ -302,6 +302,31 @@ func NewSourceMap(inserted map[string][]int, generated []string, shadows map[str
 	return m
 }
 
+// TouchesDir reports whether the transpiler produced output for any file in
+// dir — i.e. the package there has decorators. The CLI uses it to refuse a
+// single-file `deco run x.go` on a decorated package, where go's
+// listed-files-only semantics would drop the generated wrappers.
+func (m *SourceMap) TouchesDir(dir string) bool {
+	if m == nil {
+		return false
+	}
+	abs := dir
+	if a, err := filepath.Abs(dir); err == nil {
+		abs = a
+	}
+	for p := range m.inserted {
+		if filepath.Dir(p) == abs {
+			return true
+		}
+	}
+	for p := range m.generated {
+		if filepath.Dir(p) == abs {
+			return true
+		}
+	}
+	return false
+}
+
 // Remap translates a diagnostic position (the path and 1-based line as reported
 // by the go toolchain against the overlay) back to the user's source. path may
 // be an overlay shadow file or a logical path; absolute or relative to the cwd.
