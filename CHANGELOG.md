@@ -4,6 +4,20 @@ All notable changes to **deco** are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.17.0] - 2026-09-28
+
+### Added
+
+- Documentation site at
+  [paulmanoni.github.io/deco](https://paulmanoni.github.io/deco/) — guide
+  (getting started, using and writing decorators, methods, performance) and
+  reference (CLI, library API) — deployed to GitHub Pages on push to main.
+
+### Changed
+
+- The README is trimmed to the essentials (install, one example, highlights)
+  and points at the documentation site.
+
 ## [0.16.0] - 2026-09-28
 
 ### Added
@@ -285,6 +299,7 @@ All notable changes to **deco** are documented here. The format is based on
 - Clear `file:line` errors for unknown / wrong-arity decorators and methods.
 - Three-signature example; installable with `go install`.
 
+[0.17.0]: https://github.com/paulmanoni/deco/releases/tag/v0.17.0
 [0.16.0]: https://github.com/paulmanoni/deco/releases/tag/v0.16.0
 [0.15.0]: https://github.com/paulmanoni/deco/releases/tag/v0.15.0
 [0.14.0]: https://github.com/paulmanoni/deco/releases/tag/v0.14.0
