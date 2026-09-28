@@ -4,7 +4,7 @@ All notable changes to **deco** are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
-## [0.13.0] - 2026-09-28
+## [0.14.0] - 2026-09-28
 
 ### Added
 
@@ -26,7 +26,7 @@ All notable changes to **deco** are documented here. The format is based on
   parameter prevents the package-level method expression — and are rejected
   with a clear `file:line` error.
 
-## [0.12.0] - 2026-09-28
+## [0.13.0] - 2026-09-28
 
 ### Added
 
@@ -49,6 +49,15 @@ All notable changes to **deco** are documented here. The format is based on
   `completion` subcommand is gone; `deco help` / `deco` print the usage text.
 - Examples and docs now use the `//deco:wrap` directive form.
 - go directive bumped to 1.27.1.
+
+## [0.12.0] - 2026-06-22
+
+### Added
+
+- `transpiler.Scan` — a read-only structured annotation front-end: returns
+  every `//@<keyword>` directive on a top-level function's doc comment as
+  data (`Hit`), so downstream tools can generate their own code from the
+  annotations. deco itself stays oblivious to what the keywords mean.
 
 ## [0.11.0] - 2026-06-11
 
@@ -225,6 +234,7 @@ All notable changes to **deco** are documented here. The format is based on
 - Clear `file:line` errors for unknown / wrong-arity decorators and methods.
 - Three-signature example; installable with `go install`.
 
+[0.14.0]: https://github.com/paulmanoni/deco/releases/tag/v0.14.0
 [0.13.0]: https://github.com/paulmanoni/deco/releases/tag/v0.13.0
 [0.12.0]: https://github.com/paulmanoni/deco/releases/tag/v0.12.0
 [0.11.0]: https://github.com/paulmanoni/deco/releases/tag/v0.11.0
