@@ -7,3 +7,7 @@
 .idea/
 # Stray binaries from `deco build ./<mainpkg>` writing to the module root
 /router
+# Docs site
+/docs/node_modules/
+/docs/.vitepress/dist/
+/docs/.vitepress/cache/
