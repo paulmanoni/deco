@@ -179,9 +179,10 @@ The annotations don't change. deco detects the shape from the signature
 
 `proceed` semantics are identical to `Func`: call it zero times to
 short-circuit (zero values), once to run, more than once to retry — a repeated
-`proceed()` re-runs everything downstream. Factory detection needs the
-signature, so it applies to same-package (bare-name) decorators; a qualified
-`pkg.Name` decorator is always treated as wrap-style for now.
+`proceed()` re-runs everything downstream. Detection works across packages:
+deco reads the decorator's defining package (in your module or any dependency)
+to classify it, so `//deco:wrap mw.Traced` from a shared middleware library
+fuses exactly like a same-package factory.
 
 ### Request-aware decorators (reading args & results)
 
@@ -242,8 +243,10 @@ func Add(a, b int) int { return a + b }
 - **Bare name** (`//deco:wrap logged`) — resolves to a decorator in the same
   package.
 - **Qualified name** (`//deco:wrap mw.Logged`) — a decorator from another
-  package. deco finds the package automatically (it matches `mw` against your
-  module's packages via `go list`), so this usually just works:
+  package, in your module or an external dependency. deco finds the package
+  automatically (it matches `mw` against your module's packages via
+  `go list`), reads its source to arity-check the reference and to fuse
+  middleware factories, so this usually just works:
 
   ```go
   //deco:wrap mw.Logged

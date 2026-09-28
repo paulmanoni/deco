@@ -4,6 +4,24 @@ All notable changes to **deco** are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.16.0] - 2026-09-28
+
+### Added
+
+- **First-class decorators from other libraries.** A qualified decorator
+  (`pkg.Name` — another package in your module OR an external dependency) now
+  gets the same treatment as a same-package one: deco resolves the defining
+  package's source (module index, or `go list` into the module cache) and
+  reads its signatures, so
+  - a qualified **middleware factory fuses** — `//deco:wrap mw.Traced` from a
+    shared middleware library compiles to the reflection-free wrapper;
+  - a **wrong-arity** qualified reference is a clear transpile-time
+    `file:line` error instead of a cryptic compile error inside `*_gen.go`.
+  The check is best-effort and permissive where it must be: a package deco
+  cannot read, a package-level `var` decorator, or declarations that disagree
+  across build tags fall back to the previous unchecked wrap-style behaviour,
+  so nothing that worked before stops working.
+
 ## [0.15.0] - 2026-09-28
 
 ### Added
@@ -30,12 +48,6 @@ All notable changes to **deco** are documented here. The format is based on
   including a compile check of fused output against the real decorators
   package; the `./example` `audited` decorator is now a factory, so
   `deco run ./example` exercises the fused path for a function and a method.
-
-### Limitations
-
-- Factory detection needs the decorator's signature, so it applies to
-  same-package (bare-name) decorators; a qualified `pkg.Name` decorator is
-  treated as wrap-style for now.
 
 ## [0.14.0] - 2026-09-28
 
@@ -267,6 +279,7 @@ All notable changes to **deco** are documented here. The format is based on
 - Clear `file:line` errors for unknown / wrong-arity decorators and methods.
 - Three-signature example; installable with `go install`.
 
+[0.16.0]: https://github.com/paulmanoni/deco/releases/tag/v0.16.0
 [0.15.0]: https://github.com/paulmanoni/deco/releases/tag/v0.15.0
 [0.14.0]: https://github.com/paulmanoni/deco/releases/tag/v0.14.0
 [0.13.0]: https://github.com/paulmanoni/deco/releases/tag/v0.13.0

@@ -250,6 +250,93 @@ func (s *Svc) Bump(d int) int { s.n += d; return s.n }
 	}
 }
 
+// TestQualifiedCrossPackage covers decorators from OTHER packages: their
+// defining package's source is resolved through the module index, so (a) a
+// qualified factory fuses exactly like a bare one, (b) a wrong-arity
+// qualified reference is a clear transpile-time error instead of a compile
+// error inside *_gen.go, and (c) a package-level VAR decorator — invisible to
+// the function scan — still works untouched (permissive fallback).
+func TestQualifiedCrossPackage(t *testing.T) {
+	dir := t.TempDir()
+	root, err := filepath.Abs("..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(dir, "go.mod"),
+		"module xmod\n\ngo 1.27.1\n\nrequire github.com/paulmanoni/deco v0.0.0\n\nreplace github.com/paulmanoni/deco => "+root+"\n")
+
+	if err := os.MkdirAll(filepath.Join(dir, "mw"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(dir, "mw", "mw.go"), `package mw
+
+import "github.com/paulmanoni/deco/decorators"
+
+func Traced() decorators.Middleware { return func(p func()) { p() } }
+
+func Timing[F any](label string, fn F) F { _ = label; return fn }
+
+var Passthru = func(fn func(int) int) func(int) int { return fn }
+`)
+	if err := os.MkdirAll(filepath.Join(dir, "app"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(dir, "app", "app.go"), `package app
+
+//deco:wrap mw.Traced
+func Double(x int) int { return x * 2 }
+
+//deco:wrap mw.Timing("slow")
+func Slow(x int) int { return x }
+
+//deco:wrap mw.Passthru
+func Tripled(x int) int { return x * 3 }
+`)
+	if err := Generate(dir); err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	gen := readFile(t, filepath.Join(dir, "app", "app_gen.go"))
+	for _, want := range []string{
+		// (a) qualified factory → fused, reflection-free
+		"var doubleImplMWs = []decorators.Middleware{mw.Traced()}",
+		"decorators.Run(doubleImplMWs, func() { r0 = doubleImpl(x) })",
+		// wrap-style qualified with args still nests
+		`var slowImplDecorated = mw.Timing("slow", slowImpl)`,
+		// (c) var decorator: unknown to the scan, passes through untouched
+		"var tripledImplDecorated = mw.Passthru(tripledImpl)",
+	} {
+		if !strings.Contains(gen, want) {
+			t.Errorf("cross-package output missing %q:\n%s", want, gen)
+		}
+	}
+	if out, err := goBuild(dir); err != nil {
+		t.Fatalf("cross-package module does not compile: %v\n%s", err, out)
+	}
+
+	// (b) wrong arity on a qualified decorator is now caught at transpile time.
+	dir2 := t.TempDir()
+	writeFile(t, filepath.Join(dir2, "go.mod"), "module xmod2\n\ngo 1.27.1\n")
+	if err := os.MkdirAll(filepath.Join(dir2, "mw"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(dir2, "mw", "mw.go"), `package mw
+
+func Timing[F any](label string, fn F) F { _ = label; return fn }
+`)
+	if err := os.MkdirAll(filepath.Join(dir2, "app"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(dir2, "app", "app.go"), `package app
+
+//deco:wrap mw.Timing
+func F(x int) int { return x }
+`)
+	err = Generate(dir2)
+	if err == nil || !strings.Contains(err.Error(), "wrong arity") {
+		t.Fatalf("expected a qualified wrong-arity error, got: %v", err)
+	}
+}
+
 // TestMixedStackFusesFactoryRuns: wrap-style decorators still nest, but a run
 // of consecutive factories inside the stack collapses into ONE
 // decorators.Chain layer.

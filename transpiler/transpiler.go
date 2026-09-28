@@ -379,6 +379,9 @@ type analysis struct {
 type importResolver struct {
 	directives map[string]string   // selector -> import line, from //deco:import
 	modPkgs    map[string][]string // package name -> import path(s) in the module
+	dirByPath  map[string]string   // import path -> source dir (module packages)
+	root       string              // module root, cwd for external `go list` lookups
+	pkgFuncs   map[string]map[string]funcInfo // per-import-path signature cache
 }
 
 // resolve returns the import line for sel, preferring (1) the source file's own
@@ -400,6 +403,62 @@ func (r importResolver) resolve(sel string, fileImports map[string]string) (line
 	default:
 		return "", false, true
 	}
+}
+
+// funcsOf returns the plain top-level function signatures of the package at
+// importPath, so qualified decorators (pkg.Name) get the same arity checking
+// and factory classification as same-package ones. The package's source is
+// found via the module index, or `go list` for an external dependency (which
+// resolves into the module cache). Best-effort and cached per path: an
+// unreadable package yields an empty map and the caller skips checking, so a
+// library deco cannot see never blocks the build.
+func (r importResolver) funcsOf(importPath string) map[string]funcInfo {
+	if m, ok := r.pkgFuncs[importPath]; ok {
+		return m
+	}
+	m := map[string]funcInfo{}
+	r.pkgFuncs[importPath] = m // cache up front; failures stay empty (no retry)
+
+	pkgDir, ok := r.dirByPath[importPath]
+	if !ok && r.root != "" {
+		cmd := exec.Command("go", "list", "-e", "-find", "-f", "{{.Dir}}", importPath)
+		cmd.Dir = r.root
+		if out, err := cmd.Output(); err == nil {
+			pkgDir = strings.TrimSpace(string(out))
+		}
+	}
+	if pkgDir == "" {
+		return m
+	}
+	names, err := sourceFiles(pkgDir)
+	if err != nil {
+		return m
+	}
+	fset := token.NewFileSet()
+	for _, path := range names {
+		f, err := parser.ParseFile(fset, path, nil, 0)
+		if err != nil {
+			continue // best-effort: skip files that don't parse
+		}
+		imports := importsOf(f)
+		for _, decl := range f.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Recv != nil {
+				continue
+			}
+			info := funcInfo{
+				params:  paramCount(fn.Type),
+				factory: isMiddlewareFactory(fn.Type, imports),
+			}
+			// Same name declared twice (build-tagged variants): shapes that
+			// disagree make the reference uncheckable — mark it so.
+			if prev, seen := m[fn.Name.Name]; seen && prev != info {
+				info = funcInfo{params: -1}
+			}
+			m[fn.Name.Name] = info
+		}
+	}
+	return m
 }
 
 // analyze performs steps 1–4: parse every non-generated .go file, build a
@@ -476,7 +535,14 @@ func analyze(dir string, cfg config) (*analysis, error) {
 
 	// Auto-resolution: enumerate the module's packages by name (via `go list`)
 	// so qualified decorators in the same module need no //deco:import directive.
-	resolver := importResolver{directives: importDirectives, modPkgs: modulePackages(dir)}
+	idx := moduleIndexFor(dir)
+	resolver := importResolver{
+		directives: importDirectives,
+		modPkgs:    idx.byName,
+		dirByPath:  idx.dirByPath,
+		root:       moduleRoot(dir),
+		pkgFuncs:   map[string]map[string]funcInfo{},
+	}
 
 	jobsByFile := map[string][]job{}
 	for _, path := range srcNames {
@@ -825,9 +891,9 @@ func headSelector(name string) string {
 func classifyDecorator(d *decorator, funcs map[string]funcInfo, fileImports map[string]string, resolver importResolver, file string) error {
 	if isQualified(d.name) {
 		sel := headSelector(d.name)
-		_, ok, ambiguous := resolver.resolve(sel, fileImports)
+		line, ok, ambiguous := resolver.resolve(sel, fileImports)
 		if ok {
-			return nil
+			return classifyQualified(d, importPathOfLine(line), resolver, file)
 		}
 		if ambiguous {
 			return fmt.Errorf("%s:%d: package %q for decorator %q is ambiguous (several module packages share that name); "+
@@ -842,6 +908,30 @@ func classifyDecorator(d *decorator, funcs map[string]funcInfo, fileImports map[
 	if !ok {
 		return fmt.Errorf("%s:%d: decorator %q not found in package", file, d.line, d.name)
 	}
+	return classifyShape(d, info, file)
+}
+
+// classifyQualified classifies a pkg.Name decorator by reading its defining
+// package's source. When the function can't be found there — the package is
+// outside the build, the decorator is a package-level var, or its declarations
+// disagree across build tags — the reference is left as wrap-style with no
+// check, preserving the permissive behaviour libraries relied on.
+func classifyQualified(d *decorator, importPath string, resolver importResolver, file string) error {
+	if importPath == "" {
+		return nil
+	}
+	funcName := d.name[strings.IndexByte(d.name, '.')+1:]
+	info, ok := resolver.funcsOf(importPath)[funcName]
+	if !ok || info.params < 0 {
+		return nil
+	}
+	return classifyShape(d, info, file)
+}
+
+// classifyShape applies the two accepted decorator shapes to a resolved
+// signature: a middleware factory (exactly the leading args, fusable) or
+// wrap-style (leading args + the wrapped fn).
+func classifyShape(d *decorator, info funcInfo, file string) error {
 	if info.factory && info.params == d.argN {
 		d.factory = true
 		return nil
@@ -1000,42 +1090,56 @@ func importsForFile(jobs []job, fileImports map[string]string, resolver importRe
 	return lines
 }
 
-// modulePkgCache memoises the package-name -> import-path(s) map per module
-// root, so `go list` runs at most once even when many directories are
-// processed in one invocation.
-var modulePkgCache = map[string]map[string][]string{}
+// moduleIndex is what one `go list ./...` run reveals about the enclosing
+// module: its packages by name (for selector auto-resolution) and each
+// package's source directory (for reading decorator signatures).
+type moduleIndex struct {
+	byName    map[string][]string // package name -> import path(s)
+	dirByPath map[string]string   // import path -> source directory
+}
 
-// modulePackages returns the enclosing module's packages keyed by package name,
-// via `go list`. It is best-effort: if the toolchain is unavailable or the
-// directory is outside a module, it returns an empty map and callers fall back
-// to //deco:import. "main" packages are excluded (they can't be imported).
-func modulePackages(dir string) map[string][]string {
+// moduleIndexCache memoises the index per module root, so `go list` runs at
+// most once even when many directories are processed in one invocation.
+var moduleIndexCache = map[string]*moduleIndex{}
+
+// moduleIndexFor returns the enclosing module's package index via `go list`.
+// It is best-effort: if the toolchain is unavailable or the directory is
+// outside a module, it returns an empty index and callers fall back to
+// //deco:import. "main" packages are excluded (they can't be imported).
+func moduleIndexFor(dir string) *moduleIndex {
 	root := moduleRoot(dir)
+	idx := &moduleIndex{byName: map[string][]string{}, dirByPath: map[string]string{}}
 	if root == "" {
-		return nil
+		return idx
 	}
-	if m, ok := modulePkgCache[root]; ok {
+	if m, ok := moduleIndexCache[root]; ok {
 		return m
 	}
-	m := map[string][]string{}
-	modulePkgCache[root] = m // cache up front; an error leaves it empty (no retry)
+	moduleIndexCache[root] = idx // cache up front; an error leaves it empty (no retry)
 
 	// -find skips dependency resolution (fast, and works on not-yet-built code);
 	// -e keeps going past packages that don't load.
-	cmd := exec.Command("go", "list", "-e", "-find", "-f", "{{.Name}}|{{.ImportPath}}", "./...")
+	cmd := exec.Command("go", "list", "-e", "-find", "-f", "{{.Name}}|{{.ImportPath}}|{{.Dir}}", "./...")
 	cmd.Dir = root
 	out, err := cmd.Output()
 	if err != nil {
-		return m
+		return idx
 	}
 	for line := range strings.SplitSeq(strings.TrimSpace(string(out)), "\n") {
-		name, path, ok := strings.Cut(line, "|")
-		if !ok || name == "" || name == "main" || path == "" {
+		name, rest, ok := strings.Cut(line, "|")
+		if !ok || name == "" || name == "main" {
 			continue
 		}
-		m[name] = append(m[name], path)
+		path, pkgDir, _ := strings.Cut(rest, "|")
+		if path == "" {
+			continue
+		}
+		idx.byName[name] = append(idx.byName[name], path)
+		if pkgDir != "" {
+			idx.dirByPath[path] = pkgDir
+		}
 	}
-	return m
+	return idx
 }
 
 // moduleRoot returns the directory of the go.mod enclosing dir, or "" if none.
