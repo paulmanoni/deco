@@ -1,5 +1,5 @@
 // Package routing turns the router itself into a decorator. Annotating a
-// handler with //@decorate routing.Route("GET", "/users") registers it — the
+// handler with //deco:wrap routing.Route("GET", "/users") registers it — the
 // classic Flask @app.route pattern, but resolved at compile time by deco.
 //
 // Because deco builds each decorator chain ONCE at package init, Route runs at

@@ -12,17 +12,17 @@ import (
 // Users stacks three decorators across two packages. Bottom-up: routing.Route
 // (topmost) is outermost, so it registers the fully-decorated handler.
 //
-//@decorate routing.Route("GET", "/users")
-//@decorate middleware.Logged
-//@decorate middleware.RequireRole("admin")
+//deco:wrap routing.Route("GET", "/users")
+//deco:wrap middleware.Logged
+//deco:wrap middleware.RequireRole("admin")
 func Users(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintln(w, "users: alice, bob")
 }
 
 // Health registers itself with the router and is logged.
 //
-//@decorate routing.Route("GET", "/health")
-//@decorate middleware.Logged
+//deco:wrap routing.Route("GET", "/health")
+//deco:wrap middleware.Logged
 func Health(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintln(w, "ok")
 }

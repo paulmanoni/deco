@@ -1,7 +1,8 @@
 // Package transpiler implements the comment-hosted decorator transpiler.
 //
 // The model, in one breath: a user annotates any plain function with
-// //@decorate doc comments; we rename that function to an unexported
+// //deco:wrap doc comments (or the //@decorate alias); we rename that
+// function to an unexported
 // <name>Impl and generate a brand-new function with the original name and an
 // identical signature that builds the decorator chain over <name>Impl. Every
 // existing caller of the original name therefore transparently flows through
@@ -10,7 +11,8 @@
 // Strategy A (rename-and-wrap), end to end:
 //
 //  1. Parse every non-generated .go file in the directory with comments intact.
-//  2. For each func declaration, read its doc group for //@decorate lines.
+//  2. For each func declaration, read its doc group for //deco:wrap (or
+//     alias) lines.
 //  3. From the full *ast.FuncType, faithfully reproduce the signature (named,
 //     unnamed, grouped and variadic params; zero/one/many results).
 //  4. Surgically rename the original function to <name>Impl in place (a precise
@@ -59,6 +61,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -71,11 +74,16 @@ import (
 // directive form, so gofmt leaves it untouched (no space inserted).
 const marker = "//deco:wrapper "
 
-// markerKey / defaultAnnotation are the slash-stripped forms used when scanning
-// doc comments, so we match regardless of any space gofmt inserts after "//".
+// markerKey / wrapDirectiveKey / defaultAnnotation are the slash-stripped forms
+// used when scanning doc comments, so we match regardless of any space gofmt
+// inserts after "//".
 const (
 	markerKey = "deco:wrapper"
-	// defaultAnnotation is the doc-comment keyword that introduces a decorator
+	// wrapDirectiveKey is the primary decorator syntax, in Go's own
+	// //tool:directive form (like //go:embed): //deco:wrap name. It is always
+	// recognised, regardless of WithAnnotation.
+	wrapDirectiveKey = "deco:wrap"
+	// defaultAnnotation is the alias keyword that also introduces a decorator
 	// when none is configured: //@decorate name. Override it with WithAnnotation.
 	defaultAnnotation = "@decorate"
 	// importDirectiveKey introduces an import to inject into generated files so
@@ -87,17 +95,19 @@ const (
 
 // config holds tunable transpiler settings, populated from Options.
 type config struct {
-	annotation string // the slash-stripped keyword that introduces a decorator
+	annotation string // the slash-stripped alias keyword that introduces a decorator
 }
 
 // An Option customises how the transpiler reads annotations.
 type Option func(*config)
 
-// WithAnnotation sets the doc-comment keyword that introduces a decorator. The
-// default is "@decorate" (i.e. //@decorate name). Provide the full keyword
-// including any leading "@" you want: WithAnnotation("@wrap") matches
-// //@wrap name, while WithAnnotation("decorate") matches //decorate name. An
-// empty keyword is ignored (the default is kept).
+// WithAnnotation sets the alias doc-comment keyword that introduces a
+// decorator. The default is "@decorate" (i.e. //@decorate name). Provide the
+// full keyword including any leading "@" you want: WithAnnotation("@wrap")
+// matches //@wrap name, while WithAnnotation("decorate") matches
+// //decorate name. An empty keyword is ignored (the default is kept). The
+// directive form //deco:wrap name is always recognised in addition to the
+// alias.
 func WithAnnotation(keyword string) Option {
 	return func(c *config) {
 		if keyword != "" {
@@ -129,13 +139,13 @@ type decorator struct {
 
 // job is one function that needs a generated wrapper.
 type job struct {
-	wrapperName string         // the original, public-facing name (e.g. Add)
-	implName    string         // the renamed implementation (e.g. addImpl)
-	decorators  []decorator    // in source (top-to-bottom) order
-	fn          *ast.FuncType  // the full signature
-	srcFile     string         // absolute path of the source file
-	decl        *ast.FuncDecl  // the declaration (used for rename positions)
-	needsRename bool           // false when a marker shows the rename already happened
+	wrapperName string        // the original, public-facing name (e.g. Add)
+	implName    string        // the renamed implementation (e.g. addImpl)
+	decorators  []decorator   // in source (top-to-bottom) order
+	fn          *ast.FuncType // the full signature
+	srcFile     string        // absolute path of the source file
+	decl        *ast.FuncDecl // the declaration (used for rename positions)
+	needsRename bool          // false when a marker shows the rename already happened
 }
 
 // Output is one file's worth of generated content, keyed by the absolute path
@@ -579,35 +589,50 @@ func OverlayWithSourceMap(dir string, opts ...Option) (overlayPath string, sourc
 	return overlayPath, sm, cleanup, nil
 }
 
-// parseAnnotations scans a doc group for //@decorate lines (and the
-// //deco:wrapper marker). It returns the decorators in source order plus
-// the wrapper-name override carried by the marker (empty if absent).
+// parseAnnotations scans a doc group for decorator lines — the //deco:wrap
+// directive and the configured alias keyword (default //@decorate) — plus the
+// //deco:wrapper marker. It returns the decorators in source order and the
+// wrapper-name override carried by the marker (empty if absent).
 func parseAnnotations(doc *ast.CommentGroup, fset *token.FileSet, annotation string) ([]decorator, string) {
 	var decs []decorator
 	var wrapperOverride string
 	for _, c := range doc.List {
 		// Normalise away the leading slashes and any space gofmt may have
-		// inserted, so "//@decorate x" and "// @decorate x" both match.
+		// inserted, so "//deco:wrap x" and "// deco:wrap x" both match.
 		content := strings.TrimSpace(strings.TrimLeft(c.Text, "/"))
-		switch {
-		case strings.HasPrefix(content, markerKey):
-			wrapperOverride = strings.TrimSpace(strings.TrimPrefix(content, markerKey))
-		case strings.HasPrefix(content, annotation):
-			spec := strings.TrimSpace(strings.TrimPrefix(content, annotation))
-			if spec == "" {
-				continue
-			}
-			name, args, argN, selectors := splitDecoratorSpec(spec)
-			decs = append(decs, decorator{
-				name:      name,
-				args:      args,
-				argN:      argN,
-				line:      fset.Position(c.Slash).Line,
-				selectors: selectors,
-			})
+		if o, ok := cutKeyword(content, markerKey); ok {
+			wrapperOverride = o
+			continue
 		}
+		spec, ok := cutKeyword(content, wrapDirectiveKey)
+		if !ok {
+			spec, ok = cutKeyword(content, annotation)
+		}
+		if !ok || spec == "" {
+			continue
+		}
+		name, args, argN, selectors := splitDecoratorSpec(spec)
+		decs = append(decs, decorator{
+			name:      name,
+			args:      args,
+			argN:      argN,
+			line:      fset.Position(c.Slash).Line,
+			selectors: selectors,
+		})
 	}
 	return decs, wrapperOverride
+}
+
+// cutKeyword matches content against a leading keyword at a word boundary: the
+// keyword must be followed by whitespace or the end of the line, so
+// "deco:wrap" never matches a "deco:wrapper" line and "@decorate" never
+// matches "@decorated". It returns the trimmed remainder.
+func cutKeyword(content, keyword string) (spec string, ok bool) {
+	rest, found := strings.CutPrefix(content, keyword)
+	if !found || (rest != "" && rest[0] != ' ' && rest[0] != '\t') {
+		return "", false
+	}
+	return strings.TrimSpace(rest), true
 }
 
 // splitDecoratorSpec parses a decorator spec like `timing("slow")` or
@@ -1035,8 +1060,7 @@ func genBytes(srcPath, pkg string, jobs []job, imports []string, fset *token.Fil
 //	logged(timing("slow", addImpl))
 func buildChain(j job) string {
 	expr := j.implName
-	for i := len(j.decorators) - 1; i >= 0; i-- {
-		d := j.decorators[i]
+	for _, d := range slices.Backward(j.decorators) {
 		if d.args == "" {
 			expr = fmt.Sprintf("%s(%s)", d.name, expr)
 		} else {

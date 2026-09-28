@@ -19,7 +19,7 @@ cd examples/remap-demo
 `Warn` has a `Printf` bug:
 
 ```go
-//@decorate logged
+//deco:wrap logged
 func Warn(code int) {
 	fmt.Printf("%s\n", code) // %s with an int — flagged on this line
 }

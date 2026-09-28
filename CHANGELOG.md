@@ -4,6 +4,30 @@ All notable changes to **deco** are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.12.0] - 2026-09-28
+
+### Added
+
+- `//deco:wrap name` — the decorator annotation in Go's own `//tool:directive`
+  comment form (like `//go:embed`), now the primary, always-recognised syntax.
+  `//@decorate` (and any `WithAnnotation`/`-annotation` keyword) remains a fully
+  supported alias; both forms stack together in one doc comment. Keyword
+  matching is now word-boundary precise (`//deco:wrapper` markers and
+  `//@decorated` can never be misread as annotations).
+- gofmt-style flags on `deco generate`: `-l` lists files whose generated
+  content differs from disk, `-d` prints unified diffs; either suppresses
+  writing unless `-w` is also given (no flags = write, as before).
+  `test -z "$(deco generate -l .)"` is the CI drift gate.
+
+### Changed
+
+- **Zero dependencies**: the CLI is now built on the stdlib `flag` package;
+  cobra (and its transitive deps) are gone from go.mod. Flags are single-dash
+  in the go style (`-annotation`; `--annotation` still accepted). The cobra
+  `completion` subcommand is gone; `deco help` / `deco` print the usage text.
+- Examples and docs now use the `//deco:wrap` directive form.
+- go directive bumped to 1.27.1.
+
 ## [0.11.0] - 2026-06-11
 
 ### Added
@@ -179,6 +203,7 @@ All notable changes to **deco** are documented here. The format is based on
 - Clear `file:line` errors for unknown / wrong-arity decorators and methods.
 - Three-signature example; installable with `go install`.
 
+[0.12.0]: https://github.com/paulmanoni/deco/releases/tag/v0.12.0
 [0.11.0]: https://github.com/paulmanoni/deco/releases/tag/v0.11.0
 [0.10.0]: https://github.com/paulmanoni/deco/releases/tag/v0.10.0
 [0.9.0]: https://github.com/paulmanoni/deco/releases/tag/v0.9.0

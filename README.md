@@ -14,10 +14,14 @@ a doc comment and `deco` wraps it — every caller of the original name
 transparently flows through your decorators.
 
 ```go
-//@decorate logged
-//@decorate timing("slow")
+//deco:wrap logged
+//deco:wrap timing("slow")
 func Add(a, b int) int { return a + b }
 ```
+
+The `//deco:wrap` directive uses Go's own `//tool:directive` comment form
+(like `//go:embed`), so gofmt never rewrites it. The Python-flavoured
+`//@decorate` spelling is accepted as an alias everywhere.
 
 ```sh
 deco run .
@@ -55,14 +59,27 @@ deco install ./cmd/foo      # = go install ./cmd/foo
   environment and working directory, and **deco exits with the child's exact
   exit code** (so a failing `deco test` fails CI).
 
-deco's own flags go **before** the subcommand:
+deco's own flags go **before** the subcommand (single-dash, go style):
 
 ```sh
-deco --annotation "@wrap" test ./...   # use //@wrap instead of //@decorate
+deco -annotation "@wrap" test ./...   # accept //@wrap as the alias keyword
 ```
 
 `deco generate [dir]` is the one non-wrapper command: it writes `<file>_gen.go`
-to disk instead of using an overlay.
+to disk instead of using an overlay. It speaks gofmt's flag vocabulary:
+
+```sh
+deco generate ./...        # write wrappers to disk (the default)
+deco generate -l ./...     # list files whose generated content differs; write nothing
+deco generate -d ./...     # print unified diffs; write nothing
+deco generate -l -w ./...  # list AND write (flags combine, like gofmt)
+```
+
+`-l` doubles as a CI drift gate, the same way `gofmt -l` does:
+
+```sh
+test -z "$(deco generate -l .)"
+```
 
 > **Positions:** `vet`/`test`/`build` run against the *transpiled* overlay, but
 > deco **remaps diagnostic positions back to your source** — both compiler/vet
@@ -162,7 +179,7 @@ func RequireRole[F any](role string, fn F) F {
 Use it like any other decorator:
 
 ```go
-//@decorate middleware.RequireRole("admin")
+//deco:wrap middleware.RequireRole("admin")
 func Users(w http.ResponseWriter, r *http.Request) { ... }
 ```
 
@@ -176,20 +193,20 @@ Annotate a function. Decorators **stack bottom-up**: the topmost annotation is
 the outermost wrapper.
 
 ```go
-//@decorate logged          // outermost
-//@decorate timing("slow")  // innermost
+//deco:wrap logged          // outermost
+//deco:wrap timing("slow")  // innermost
 func Add(a, b int) int { return a + b }
 ```
 
-- **Bare name** (`//@decorate logged`) — resolves to a decorator in the same
+- **Bare name** (`//deco:wrap logged`) — resolves to a decorator in the same
   package.
-- **Qualified name** (`//@decorate mw.Logged`) — a decorator from another
+- **Qualified name** (`//deco:wrap mw.Logged`) — a decorator from another
   package. deco finds the package automatically (it matches `mw` against your
   module's packages via `go list`), so this usually just works:
 
   ```go
-  //@decorate mw.Logged
-  //@decorate mw.RequireRole("admin")
+  //deco:wrap mw.Logged
+  //deco:wrap mw.RequireRole("admin")
   func Handler(w http.ResponseWriter, r *http.Request) { ... }
   ```
 
@@ -212,7 +229,7 @@ deco run ./examples/router  # multi-package HTTP router; the router itself is a 
 ```
 
 `./examples/router` shows the Flask `@app.route` pattern (annotating a handler
-with `//@decorate routing.Route("GET", "/users")` registers it) **and** the
+with `//deco:wrap routing.Route("GET", "/users")` registers it) **and** the
 request-aware `RequireRole` middleware above:
 
 ```
@@ -237,14 +254,14 @@ deco ships two importable packages. Full reference on
 | `Generate(dir string, opts ...Option) error` | rename originals and write `<file>_gen.go` across the package tree |
 | `Transform(dir string, opts ...Option) ([]Output, error)` | the same generation, returned in memory — no writes |
 | `Overlay(dir string, opts ...Option) (path string, cleanup func(), err error)` | write a `go build -overlay` JSON; source left untouched |
-| `WithAnnotation(keyword string) Option` | use a custom annotation keyword instead of `@decorate` |
+| `WithAnnotation(keyword string) Option` | use a custom alias keyword instead of `@decorate` (`//deco:wrap` always works) |
 
 ```go
 import "github.com/paulmanoni/deco/transpiler"
 
 if err := transpiler.Generate("./mypkg"); err != nil { ... }
 
-// custom keyword: recognise //@wrap instead of //@decorate
+// custom alias keyword: recognise //@wrap as well as //deco:wrap
 transpiler.Generate("./mypkg", transpiler.WithAnnotation("@wrap"))
 ```
 
@@ -302,6 +319,11 @@ helper.
 
 ## Notes
 
+- deco has **zero dependencies** — the module is stdlib-only, and the code it
+  generates depends only on what you already import.
+- `//deco:wrap name` is the primary syntax; `//@decorate name` (or a custom
+  keyword via `-annotation`) is an alias. Both may appear in the same doc
+  comment and stack together.
 - Decorators are applied once, at package init (like Python's `fn = a(b(fn))`).
 - Methods (functions with receivers) are not supported in v1.
 - Use `decorators.Func` to wrap a call, or `decorators.FuncValues` when you need

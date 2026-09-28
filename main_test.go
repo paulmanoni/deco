@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"io"
+	"os"
 	"os/exec"
 	"slices"
 	"strings"
@@ -30,20 +31,19 @@ func TestBuildGoArgs(t *testing.T) {
 
 func TestIsPassThrough(t *testing.T) {
 	cases := map[string]bool{
-		"build":   true,
-		"test":    true,
-		"vet":     true,
-		"install": true,
-		"list":    true,
-		"mod":     true, // arbitrary/unenumerated → still forwarded
-		"env":     true,
-		"future":  true, // a hypothetical future go subcommand
+		"build":    true,
+		"test":     true,
+		"vet":      true,
+		"install":  true,
+		"list":     true,
+		"mod":      true, // arbitrary/unenumerated → still forwarded
+		"env":      true,
+		"future":   true, // a hypothetical future go subcommand
 		"generate": false,
 		"help":     false,
-		"completion": false,
-		"":           false,
-		"-h":         false,
-		"--help":     false,
+		"":         false,
+		"-h":       false,
+		"--help":   false,
 	}
 	for sub, want := range cases {
 		if got := isPassThrough(sub); got != want {
@@ -62,6 +62,16 @@ func TestSplitLeading(t *testing.T) {
 	ann, sub, rest = splitLeading([]string{"--annotation=@mw", "build", "./x"})
 	if ann != "@mw" || sub != "build" || !slices.Equal(rest, []string{"./x"}) {
 		t.Errorf("got (%q, %q, %v)", ann, sub, rest)
+	}
+
+	// Single-dash forms, go flag style.
+	ann, sub, rest = splitLeading([]string{"-annotation", "@mw", "vet", "./..."})
+	if ann != "@mw" || sub != "vet" || !slices.Equal(rest, []string{"./..."}) {
+		t.Errorf("single-dash: got (%q, %q, %v)", ann, sub, rest)
+	}
+	ann, sub, _ = splitLeading([]string{"-annotation=@mw", "build"})
+	if ann != "@mw" || sub != "build" {
+		t.Errorf("single-dash =: got (%q, %q)", ann, sub)
 	}
 
 	// No deco flags: default annotation, subcommand is the first token, args verbatim.
@@ -141,9 +151,9 @@ func TestPassThroughArbitraryNoOverlay(t *testing.T) {
 // line but get the logical path and a flag, and unknown files pass through.
 // Absolute paths outside the test cwd keep displayPath from rewriting them.
 func TestDiagFilterRemap(t *testing.T) {
-	orig := "/proj/example/math.go"     // transformed original, one marker at line 9
-	gen := "/proj/example/math_gen.go"  // fully generated
-	shadowOrig := "/tmp/ov/0_math.go"   // what `go` actually reports
+	orig := "/proj/example/math.go"    // transformed original, one marker at line 9
+	gen := "/proj/example/math_gen.go" // fully generated
+	shadowOrig := "/tmp/ov/0_math.go"  // what `go` actually reports
 	shadowGen := "/tmp/ov/1_math_gen.go"
 	sm := transpiler.NewSourceMap(
 		map[string][]int{orig: {9}},
@@ -180,8 +190,8 @@ func TestDiagFilterRemap(t *testing.T) {
 // indented failure line and a tab-indented panic stack frame, where the
 // position is mid-line (not at the start) and a shadow path is used.
 func TestDiagFilterStdoutPositions(t *testing.T) {
-	orig := "/proj/calc.go"           // func at source line 11, body at 12
-	shadow := "/tmp/ov/0_calc.go"     // overlay shifts body to line 13
+	orig := "/proj/calc.go"       // func at source line 11, body at 12
+	shadow := "/tmp/ov/0_calc.go" // overlay shifts body to line 13
 	sm := transpiler.NewSourceMap(
 		map[string][]int{orig: {11}}, // one marker inserted at line 11
 		nil,
@@ -204,6 +214,64 @@ func TestDiagFilterStdoutPositions(t *testing.T) {
 	}
 	if strings.Contains(out, "0_calc.go") {
 		t.Errorf("shadow path leaked:\n%q", out)
+	}
+}
+
+// TestRunGenerateFlags covers the gofmt-style flag vocabulary: -l lists the
+// files that would change without writing them, the default mode writes, and a
+// second -l on an up-to-date tree lists nothing. The fixture uses the
+// //deco:wrap directive form end to end.
+func TestRunGenerateFlags(t *testing.T) {
+	dir := t.TempDir()
+	src := `package p
+
+func logged[F any](fn F) F { return fn }
+
+//deco:wrap logged
+func Add(a, b int) int { return a + b }
+`
+	path := dir + "/code.go"
+	if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// -l: both the transformed original and the new wrapper are listed, and
+	// nothing is written.
+	var out, errb bytes.Buffer
+	if code := runGenerate([]string{"-l", dir}, &out, &errb); code != 0 {
+		t.Fatalf("generate -l = %d, stderr:\n%s", code, errb.String())
+	}
+	if !strings.Contains(out.String(), "code.go") || !strings.Contains(out.String(), "code_gen.go") {
+		t.Errorf("-l should list code.go and code_gen.go, got:\n%s", out.String())
+	}
+	if got, _ := os.ReadFile(path); string(got) != src {
+		t.Error("-l must not modify the source file")
+	}
+	if _, err := os.Stat(dir + "/code_gen.go"); err == nil {
+		t.Error("-l must not write the wrapper")
+	}
+
+	// Default mode writes, exactly like before.
+	out.Reset()
+	errb.Reset()
+	if code := runGenerate([]string{dir}, &out, &errb); code != 0 {
+		t.Fatalf("generate = %d, stderr:\n%s", code, errb.String())
+	}
+	gen, err := os.ReadFile(dir + "/code_gen.go")
+	if err != nil {
+		t.Fatalf("wrapper not written: %v", err)
+	}
+	if !strings.Contains(string(gen), "func Add(a, b int) int") {
+		t.Errorf("wrapper missing decorated Add:\n%s", gen)
+	}
+
+	// Up to date now: -l lists nothing.
+	out.Reset()
+	if code := runGenerate([]string{"-l", dir}, &out, &errb); code != 0 {
+		t.Fatalf("generate -l (2nd) = %d", code)
+	}
+	if out.Len() != 0 {
+		t.Errorf("-l on an up-to-date tree should print nothing, got:\n%s", out.String())
 	}
 }
 

@@ -5,16 +5,17 @@
 //	deco generate [dir]   // deco-native: rename originals + write <file>_gen.go
 //	deco <go-subcommand>  // run `go <subcommand>` with deco's transpile overlay
 //
-// `generate` materialises wrappers on disk. Every other subcommand is forwarded
+// `generate` materialises wrappers on disk (gofmt-style -l/-d/-w flags).
+// Every other subcommand is forwarded
 // to the real `go` toolchain: for the compile/run subcommands
 // (build, run, test, vet, install, list) deco first produces its transpiled
 // overlay and injects `-overlay`, so your source tree is never modified; all
 // other subcommands (env, version, mod, …) are forwarded untouched. deco never
 // reimplements go behaviour — it transpiles, then hands off.
 //
-// deco's own flags (currently --annotation) go BEFORE the subcommand:
+// deco's own flags (currently -annotation) go BEFORE the subcommand:
 //
-//	deco --annotation "@wrap" test -race ./...
+//	deco -annotation "@wrap" test -race ./...
 //
 // See README.md for the full model.
 package main
@@ -22,6 +23,7 @@ package main
 import (
 	"bytes"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -31,13 +33,12 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/spf13/cobra"
-
 	"github.com/paulmanoni/deco/transpiler"
 )
 
-// annotation is the doc-comment keyword that marks a decorator; configurable
-// via --annotation so teams can use //@wrap, //@apply, etc.
+// annotation is the alias doc-comment keyword that marks a decorator (the
+// //deco:wrap directive is always recognised); configurable via -annotation so
+// teams can use //@wrap, //@apply, etc.
 var annotation string
 
 // opts builds the transpiler options from the current flags.
@@ -49,47 +50,52 @@ func main() {
 	// Anything that isn't `generate`/help is forwarded to the go toolchain, so
 	// arbitrary (and future) subcommands work without being enumerated.
 	ann, sub, rest := splitLeading(os.Args[1:])
-	if isPassThrough(sub) {
-		annotation = ann
+	annotation = ann
+	switch {
+	case isPassThrough(sub):
 		os.Exit(passThrough(sub, rest))
-	}
-	// cobra owns generate + help/completion (and parses --annotation itself).
-	if err := rootCmd().Execute(); err != nil {
-		os.Exit(1)
+	case sub == "generate":
+		os.Exit(runGenerate(rest, os.Stdout, os.Stderr))
+	default: // "", help, -h, --help
+		usage(os.Stdout)
 	}
 }
 
 // splitLeading consumes deco's own flags appearing before the subcommand and
 // returns them plus the subcommand and the remaining (verbatim) args. It does
-// not touch anything from the subcommand onward — those belong to go.
+// not touch anything from the subcommand onward — those belong to go. Both
+// -annotation and --annotation are accepted, in the go flag style.
 func splitLeading(args []string) (annotation, sub string, rest []string) {
 	annotation = "@decorate"
 	for i := 0; i < len(args); i++ {
 		a := args[i]
+		if strings.HasPrefix(a, "--") {
+			a = a[1:] // --annotation and -annotation alike
+		}
 		switch {
-		case a == "--annotation":
+		case a == "-annotation":
 			if i+1 < len(args) {
 				annotation = args[i+1]
 				i++
 			}
-		case strings.HasPrefix(a, "--annotation="):
-			annotation = strings.TrimPrefix(a, "--annotation=")
+		case strings.HasPrefix(a, "-annotation="):
+			annotation = strings.TrimPrefix(a, "-annotation=")
 		default:
 			// First non-deco-flag token: the subcommand; the rest is forwarded.
-			return annotation, a, args[i+1:]
+			return annotation, args[i], args[i+1:]
 		}
 	}
 	return annotation, "", nil
 }
 
 // isPassThrough reports whether a subcommand should be forwarded to go. Empty
-// input, flags (e.g. -h), and deco's own commands are handled by cobra instead.
+// input, flags (e.g. -h), and deco's own commands are handled locally instead.
 func isPassThrough(sub string) bool {
 	if sub == "" || strings.HasPrefix(sub, "-") {
 		return false
 	}
 	switch sub {
-	case "generate", "help", "completion":
+	case "generate", "help":
 		return false
 	default:
 		return true
@@ -299,50 +305,141 @@ func displayPath(abs string) string {
 	return abs
 }
 
-// rootCmd wires up the cobra command tree (deco-native commands only; toolchain
-// subcommands are dispatched in main before cobra runs).
-func rootCmd() *cobra.Command {
-	root := &cobra.Command{
-		Use:   "deco",
-		Short: "Comment-hosted decorator transpiler and go toolchain wrapper",
-		Long: "deco brings Python-style decorators to Go via code generation.\n\n" +
-			"Annotate any plain function with doc comments:\n\n" +
-			"  //@decorate logged\n" +
-			"  //@decorate timing(\"slow\")\n" +
-			"  func Add(a, b int) int { return a + b }\n\n" +
-			"Commands:\n" +
-			"  generate [dir]     write <file>_gen.go wrappers to disk\n" +
-			"  build|run|test|vet|install|list [args]\n" +
-			"                     run the matching `go` command with deco's overlay\n" +
-			"  <any go subcommand> [args]\n" +
-			"                     forwarded to `go` verbatim (env, version, mod, …)\n\n" +
-			"Run `deco <cmd>` instead of `go <cmd>`. deco's own flags go before the\n" +
-			"subcommand, e.g. `deco --annotation \"@wrap\" test ./...`.",
-		SilenceUsage: true,
-	}
-	root.PersistentFlags().StringVar(&annotation, "annotation", "@decorate",
-		"doc-comment keyword that marks a decorator, e.g. @decorate or @wrap")
-	root.AddCommand(generateCmd())
-	return root
+// usage prints the top-level help, in the plain style of `go help`.
+func usage(w io.Writer) {
+	fmt.Fprint(w, `deco brings Python-style decorators to Go via code generation.
+
+Annotate any plain function with doc comments:
+
+	//deco:wrap logged
+	//deco:wrap timing("slow")
+	func Add(a, b int) int { return a + b }
+
+Usage:
+
+	deco [-annotation keyword] <command> [arguments]
+
+Commands:
+
+	generate [-l] [-d] [-w] [dir]
+	                   rename annotated funcs and write <file>_gen.go wrappers
+	                   (-l lists files that would change, -d prints diffs)
+	build|run|test|vet|install|list [args]
+	                   run the matching go command with deco's overlay
+	<any go subcommand> [args]
+	                   forwarded to go verbatim (env, version, mod, …)
+
+Run 'deco <cmd>' instead of 'go <cmd>'. deco's own flags go before the
+subcommand:
+
+	deco -annotation @wrap test ./...
+
+The -annotation keyword is an alias for the //deco:wrap directive, which is
+always recognised.
+`)
 }
 
-func generateCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "generate [dir]",
-		Short: "Rename annotated funcs and write <file>_gen.go wrappers to disk",
-		Args:  cobra.MaximumNArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			dir, err := resolveDir("generate", argOrDot(args))
-			if err != nil {
-				return err
-			}
-			if err := transpiler.Generate(dir, opts()...); err != nil {
-				return err
-			}
-			fmt.Fprintln(cmd.ErrOrStderr(), "deco: generated wrappers in", dir)
-			return nil
-		},
+// runGenerate implements `deco generate`, with gofmt's flag vocabulary: by
+// default it writes the results to disk; -l lists the files whose content
+// would change, -d prints unified diffs, and either suppresses writing unless
+// -w is also given.
+func runGenerate(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("deco generate", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	list := fs.Bool("l", false, "list files whose generated content differs from disk")
+	diff := fs.Bool("d", false, "display diffs instead of rewriting files")
+	write := fs.Bool("w", false, "write results to disk (the default when -l and -d are absent)")
+	fs.StringVar(&annotation, "annotation", annotation,
+		"alias keyword that marks a decorator, e.g. @decorate or @wrap")
+	fs.Usage = func() {
+		fmt.Fprintln(stderr, "usage: deco generate [-l] [-d] [-w] [-annotation keyword] [dir]")
+		fs.PrintDefaults()
 	}
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
+		return 2
+	}
+	if fs.NArg() > 1 {
+		fs.Usage()
+		return 2
+	}
+
+	dir, err := resolveDir("generate", argOrDot(fs.Args()))
+	if err != nil {
+		fmt.Fprintln(stderr, "deco:", err)
+		return 1
+	}
+	outputs, err := transpiler.Transform(dir, opts()...)
+	if err != nil {
+		fmt.Fprintln(stderr, "deco:", err)
+		return 1
+	}
+
+	doWrite := *write || (!*list && !*diff)
+	wrote := 0
+	for _, o := range outputs {
+		onDisk, readErr := os.ReadFile(o.Path)
+		if readErr == nil && bytes.Equal(onDisk, o.Content) {
+			continue // already up to date
+		}
+		if *list {
+			fmt.Fprintln(stdout, displayPath(o.Path))
+		}
+		if *diff {
+			if err := printDiff(stdout, o.Path, readErr == nil, o.Content); err != nil {
+				fmt.Fprintln(stderr, "deco:", err)
+				return 1
+			}
+		}
+		if doWrite {
+			if err := os.WriteFile(o.Path, o.Content, 0o644); err != nil {
+				fmt.Fprintf(stderr, "deco: writing %s: %v\n", o.Path, err)
+				return 1
+			}
+			wrote++
+		}
+	}
+	if doWrite && wrote > 0 {
+		fmt.Fprintln(stderr, "deco: generated wrappers in", dir)
+	}
+	return 0
+}
+
+// printDiff shows a unified diff between the on-disk file (or nothing, when it
+// does not exist yet) and the generated content, labelled with the file's
+// display path — the same shape gofmt -d prints.
+func printDiff(w io.Writer, path string, exists bool, generated []byte) error {
+	tmp, err := os.CreateTemp("", "deco-diff-*.go")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp.Name())
+	if _, err := tmp.Write(generated); err != nil {
+		tmp.Close()
+		return err
+	}
+	tmp.Close()
+
+	oldPath := os.DevNull
+	if exists {
+		oldPath = path
+	}
+	name := displayPath(path)
+	cmd := exec.Command("diff", "-u",
+		"-L", name+" (on disk)", "-L", name+" (generated)",
+		oldPath, tmp.Name())
+	cmd.Stdout = w
+	err = cmd.Run()
+	// diff exits 1 when the files differ — that is the expected case here.
+	if ee, ok := errors.AsType[*exec.ExitError](err); ok && ee.ExitCode() == 1 {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("diff %s: %w", name, err)
+	}
+	return nil
 }
 
 // argOrDot returns the single positional argument, defaulting to ".".

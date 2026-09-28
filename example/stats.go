@@ -3,8 +3,8 @@ package main
 // MinMax is variadic AND returns multiple values, decorated with qualified
 // library decorators (resolved via the //deco:import directive in math.go).
 //
-//@decorate decorators.Logged
-//@decorate decorators.Timing("minmax")
+//deco:wrap decorators.Logged
+//deco:wrap decorators.Timing("minmax")
 func MinMax(nums ...int) (int, int) {
 	if len(nums) == 0 {
 		return 0, 0

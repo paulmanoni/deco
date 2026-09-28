@@ -23,7 +23,7 @@ func Logged[F any](fn F) F {
 // reads the *http.Request from the handler's arguments and checks the X-Role
 // header, denying the request (and short-circuiting the handler) when it does
 // not match. role is the leading annotation argument, e.g.
-// //@decorate middleware.RequireRole("admin").
+// //deco:wrap middleware.RequireRole("admin").
 func RequireRole[F any](role string, fn F) F {
 	return decorators.FuncValues(fn, func(args []any, proceed func([]any) []any) []any {
 		var w http.ResponseWriter

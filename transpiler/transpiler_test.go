@@ -48,11 +48,11 @@ func use() int { return Add(1) }
 
 	// Everything else that merely spells "Add" must be byte-for-byte intact.
 	for _, want := range []string{
-		"func Address() string",                            // a different identifier
-		`"Add this to the list"`,                           // a string literal
-		"the word Add appears in a string and a comment",   // a comment
-		"return Add(1)",                                    // a call site (still hits the wrapper)
-		"//deco:wrapper Add",                               // idempotency marker stamped
+		"func Address() string",                          // a different identifier
+		`"Add this to the list"`,                         // a string literal
+		"the word Add appears in a string and a comment", // a comment
+		"return Add(1)",                                  // a call site (still hits the wrapper)
+		"//deco:wrapper Add",                             // idempotency marker stamped
 	} {
 		if !strings.Contains(orig, want) {
 			t.Errorf("expected original to still contain %q:\n%s", want, orig)
@@ -122,10 +122,10 @@ func Sum(nums ...int) int { return 0 }
 	gen := readFile(t, filepath.Join(dir, "code_gen.go"))
 
 	for _, want := range []string{
-		"func Nothing(s string) {",     // no result: no `return`, no parens
+		"func Nothing(s string) {", // no result: no `return`, no parens
 		"func Two(a, b int) (int, error)",
 		"func Sum(nums ...int) int",
-		"sumImplDecorated(nums...)",    // variadic forwarded with ...
+		"sumImplDecorated(nums...)", // variadic forwarded with ...
 	} {
 		if !strings.Contains(gen, want) {
 			t.Errorf("generated code missing %q:\n%s", want, gen)
@@ -181,6 +181,57 @@ func Fact(n int) int {
 
 // TestCustomAnnotation checks WithAnnotation: a custom keyword is honoured, and
 // the default keyword does not match it.
+// TestWrapDirective checks the primary //deco:wrap directive form: it is
+// recognised by default, coexists with the //@decorate alias in one doc group,
+// survives a custom alias keyword, and never collides with the //deco:wrapper
+// marker (word-boundary matching).
+func TestWrapDirective(t *testing.T) {
+	src := `package p
+
+func logged[F any](fn F) F { return fn }
+
+func timed[F any](fn F) F { return fn }
+
+//deco:wrap logged
+//@decorate timed
+func Add(a, b int) int { return a + b }
+`
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "code.go"), src)
+	if err := Generate(dir); err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	gen := readFile(t, filepath.Join(dir, "code_gen.go"))
+	if !strings.Contains(gen, "logged(timed(addImpl))") {
+		t.Errorf("directive and alias should stack (logged outermost):\n%s", gen)
+	}
+
+	// Idempotent: the re-parse must read //deco:wrapper as the marker, never as
+	// a //deco:wrap directive naming a "per Add" decorator.
+	if err := Generate(dir); err != nil {
+		t.Fatalf("Generate (rerun): %v", err)
+	}
+	if got := readFile(t, filepath.Join(dir, "code.go")); strings.Contains(got, "ImplImpl") {
+		t.Errorf("marker misread as directive on rerun:\n%s", got)
+	}
+
+	// The directive keeps working under a custom alias keyword.
+	dir2 := t.TempDir()
+	writeFile(t, filepath.Join(dir2, "code.go"), `package p
+
+func logged[F any](fn F) F { return fn }
+
+//deco:wrap logged
+func Add(a, b int) int { return a + b }
+`)
+	if err := Generate(dir2, WithAnnotation("@wrap")); err != nil {
+		t.Fatalf("Generate with alias: %v", err)
+	}
+	if gen := readFile(t, filepath.Join(dir2, "code_gen.go")); !strings.Contains(gen, "logged(addImpl)") {
+		t.Errorf("//deco:wrap should be recognised alongside a custom alias:\n%s", gen)
+	}
+}
+
 func TestCustomAnnotation(t *testing.T) {
 	src := `package p
 

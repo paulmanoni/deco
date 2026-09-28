@@ -8,8 +8,8 @@ package main
 // their qualified names — no same-package alias needed. Bottom-up: Logged
 // (topmost) is outermost, i.e. decorators.Logged(decorators.Timing("slow", …)).
 //
-// @decorate decorators.Logged
-// @decorate decorators.Timing("slow")
+//deco:wrap decorators.Logged
+//deco:wrap decorators.Timing("slow")
 func Add(a, b int) int {
 	return a + b
 }

@@ -3,7 +3,7 @@
 // middleware) AND with the router itself (package routing).
 //
 // Note there is no manual route wiring here. Importing the handlers package is
-// enough: each handler's //@decorate routing.Route("GET", "/path") runs at
+// enough: each handler's //deco:wrap routing.Route("GET", "/path") runs at
 // package init (deco builds each decorator chain once), registering the
 // handler — the Flask @app.route pattern. main just asks routing for the mux.
 //
@@ -21,7 +21,7 @@ import (
 )
 
 func main() {
-	mux := routing.Mux() // every //@decorate routing.Route(...) is already registered
+	mux := routing.Mux() // every //deco:wrap routing.Route(...) is already registered
 
 	get := func(path, role string) {
 		if role == "" {
@@ -38,7 +38,7 @@ func main() {
 		fmt.Printf("  -> %d %s", rec.Code, rec.Body.String())
 	}
 
-	get("/health", "")        // no auth required
-	get("/users", "")         // request-aware auth denies: no X-Role header
-	get("/users", "admin")    // allowed: header matches RequireRole("admin")
+	get("/health", "")     // no auth required
+	get("/users", "")      // request-aware auth denies: no X-Role header
+	get("/users", "admin") // allowed: header matches RequireRole("admin")
 }
