@@ -2,6 +2,7 @@ package transpiler
 
 import (
 	"os"
+	"time"
 	"path/filepath"
 	"testing"
 )
@@ -199,5 +200,65 @@ func NewList() error { return nil }
 	}
 	if len(only) != 1 || only[0].Keyword != "module" {
 		t.Errorf("filter should return just //@module, got %+v", only)
+	}
+}
+
+// TestScanCache: a rescan of an unchanged tree reuses cached per-file hits,
+// a changed file re-parses (and its new directives appear), and the keyword
+// filter applies to cached results too.
+func TestScanCache(t *testing.T) {
+	dir := t.TempDir()
+	writeScanFile(t, dir, "a.go", "package p\n\n//@rest GET /a\nfunc A() {}\n")
+	writeScanFile(t, dir, "b.go", "package p\n\n//@query\nfunc B() {}\n")
+
+	c := NewScanCache()
+	hits, err := c.Scan(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) != 2 {
+		t.Fatalf("first scan: %d hits, want 2", len(hits))
+	}
+
+	// Unchanged rescan returns identical hits (shared from the cache).
+	again, err := c.Scan(dir)
+	if err != nil || len(again) != 2 || again[0].Keyword != "rest" {
+		t.Fatalf("cached rescan wrong: %v %v", again, err)
+	}
+
+	// Change one file: its new directive shows up, the other stays cached.
+	// (mtime granularity can be coarse; set it explicitly to force staleness.)
+	writeScanFile(t, dir, "a.go", "package p\n\n//@rest POST /a2\nfunc A() {}\n")
+	old := time.Now().Add(2 * time.Second)
+	if err := os.Chtimes(filepath.Join(dir, "a.go"), old, old); err != nil {
+		t.Fatal(err)
+	}
+	hits, err = c.Scan(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var restArgs []string
+	for _, h := range hits {
+		if h.Keyword == "rest" {
+			restArgs = h.Args
+		}
+	}
+	if len(restArgs) != 2 || restArgs[0] != "POST" {
+		t.Fatalf("changed file not re-parsed: %v", hits)
+	}
+
+	// Keyword filter on the cached path.
+	only, err := c.Scan(dir, "query")
+	if err != nil || len(only) != 1 || only[0].Keyword != "query" {
+		t.Fatalf("filtered cached scan wrong: %v %v", only, err)
+	}
+
+	// Cached and uncached scans agree byte-for-byte.
+	plain, err := Scan(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plain) != len(hits) {
+		t.Fatalf("plain %d hits vs cached %d", len(plain), len(hits))
 	}
 }

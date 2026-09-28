@@ -53,37 +53,69 @@ func Scan(dir string, keywords ...string) ([]Hit, error) {
 		want[strings.TrimPrefix(strings.TrimSpace(k), "@")] = true
 	}
 
+	return scanTree(dir, want, nil)
+}
+
+// scanTree walks the tree and collects hits, filtering with want (empty =
+// all). When cache is non-nil, a file whose (mtime, size) matches the cached
+// entry reuses its parsed hits — the incremental path [ScanCache] provides.
+func scanTree(dir string, want map[string]bool, cache *ScanCache) ([]Hit, error) {
 	dirs, err := packageDirs(dir)
 	if err != nil {
 		return nil, err
 	}
-
 	var hits []Hit
 	for _, d := range dirs {
 		names, err := sourceFiles(d)
 		if err != nil {
 			return nil, err
 		}
-		fset := token.NewFileSet()
 		for _, path := range names {
-			f, err := parser.ParseFile(fset, path, nil, parser.ParseComments)
+			fileHits, err := cache.fileHits(path)
 			if err != nil {
-				return nil, fmt.Errorf("parsing %s: %w", path, err)
+				return nil, err
 			}
-			pkg := f.Name.Name
-			if f.Doc != nil {
-				hits = append(hits, scanComments(f.Doc, "", true, pkg, path, fset, want)...)
-			}
-			for _, decl := range f.Decls {
-				fn, ok := decl.(*ast.FuncDecl)
-				if !ok || fn.Doc == nil {
-					continue
-				}
-				hits = append(hits, scanDoc(fn, pkg, path, fset, want)...)
-			}
+			hits = append(hits, filterHits(fileHits, want)...)
 		}
 	}
 	return hits, nil
+}
+
+// scanFile parses one source file and returns EVERY //@ directive in it —
+// the unfiltered form the cache stores, so one cache serves any keyword set.
+func scanFile(path string) ([]Hit, error) {
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, path, nil, parser.ParseComments)
+	if err != nil {
+		return nil, fmt.Errorf("parsing %s: %w", path, err)
+	}
+	pkg := f.Name.Name
+	var hits []Hit
+	if f.Doc != nil {
+		hits = append(hits, scanComments(f.Doc, "", true, pkg, path, fset, nil)...)
+	}
+	for _, decl := range f.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Doc == nil {
+			continue
+		}
+		hits = append(hits, scanDoc(fn, pkg, path, fset, nil)...)
+	}
+	return hits, nil
+}
+
+// filterHits applies the keyword filter; an empty filter keeps everything.
+func filterHits(hits []Hit, want map[string]bool) []Hit {
+	if len(want) == 0 {
+		return hits
+	}
+	out := make([]Hit, 0, len(hits))
+	for _, h := range hits {
+		if want[h.Keyword] {
+			out = append(out, h)
+		}
+	}
+	return out
 }
 
 // scanDoc extracts the //@ directives from one function's doc group.

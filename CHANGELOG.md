@@ -4,6 +4,15 @@ All notable changes to **deco** are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.19.0] - 2026-09-29
+
+### Added
+
+- `transpiler.ScanCache` — incremental scanning: per-file hits cached on
+  (mtime, size), so a rescan of a tree re-parses only the files that changed.
+  Built for dev loops that scan on every save; one cache serves any keyword
+  set, and results agree with the plain `Scan`.
+
 ## [0.18.0] - 2026-09-28
 
 ### Added
@@ -322,6 +331,7 @@ All notable changes to **deco** are documented here. The format is based on
 - Clear `file:line` errors for unknown / wrong-arity decorators and methods.
 - Three-signature example; installable with `go install`.
 
+[0.19.0]: https://github.com/paulmanoni/deco/releases/tag/v0.19.0
 [0.18.0]: https://github.com/paulmanoni/deco/releases/tag/v0.18.0
 [0.17.1]: https://github.com/paulmanoni/deco/releases/tag/v0.17.1
 [0.17.0]: https://github.com/paulmanoni/deco/releases/tag/v0.17.0
