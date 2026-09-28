@@ -377,10 +377,10 @@ type analysis struct {
 // package name via `go list`). A file's own imports are consulted separately by
 // the caller, since they are per-file rather than package-wide.
 type importResolver struct {
-	directives map[string]string   // selector -> import line, from //deco:import
-	modPkgs    map[string][]string // package name -> import path(s) in the module
-	dirByPath  map[string]string   // import path -> source dir (module packages)
-	root       string              // module root, cwd for external `go list` lookups
+	directives map[string]string              // selector -> import line, from //deco:import
+	modPkgs    map[string][]string            // package name -> import path(s) in the module
+	dirByPath  map[string]string              // import path -> source dir (module packages)
+	root       string                         // module root, cwd for external `go list` lookups
 	pkgFuncs   map[string]map[string]funcInfo // per-import-path signature cache
 }
 
