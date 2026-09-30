@@ -29,6 +29,7 @@ The same engine the CLI uses, exported for your own tooling:
 | `Overlay(dir string, opts ...Option) (path string, cleanup func(), err error)` | write a `go build -overlay` JSON; source left untouched |
 | `OverlayWithSourceMap(dir, opts...)` | `Overlay` plus a `SourceMap` for remapping diagnostics |
 | `Scan(dir string, keywords ...string) ([]Hit, error)` | read-only: return every `//@<keyword>` directive — on functions and on package doc comments (`Hit.PackageLevel`) — as data, for downstream code generators |
+| `NewScanCache() *ScanCache` | an incremental front-end for `Scan`: `cache.Scan(dir, keywords...)` re-parses only files whose (mtime, size) changed since the last call |
 | `WithAnnotation(keyword string) Option` | custom alias keyword (`//deco:wrap` always works) |
 
 ```go
@@ -49,3 +50,22 @@ registration, or a package-doc `//@module billing` into the registration
 group): it surfaces each directive as a `Hit{Pkg, File, Func, Keyword, Args,
 Pos, PackageLevel}` without modifying anything. See
 [Using deco in your own library](../guide/embedding#building-your-own-annotations-with-scan).
+
+A dev loop that scans on every save shouldn't re-parse the whole tree each
+time. `ScanCache` makes repeated scans incremental — per-file results are
+cached keyed on the file's (mtime, size), so a rescan pays roughly one file's
+parse instead of the tree's:
+
+```go
+var cache = transpiler.NewScanCache()   // one per process
+
+func onSave() {
+    hits, err := cache.Scan(root, "rest", "query", "provide")
+    ...
+}
+```
+
+One cache serves any keyword set (it stores unfiltered hits and filters per
+call), it is safe for concurrent use, and deleted files drop out on the next
+walk. Hits returned from a cached scan are shared — treat them as read-only.
+The zero value is not usable; call `NewScanCache`.

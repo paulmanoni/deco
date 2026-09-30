@@ -104,6 +104,10 @@ none to receive every directive. Generated (`*_gen.go`), test, vendored and
 hidden files are skipped, and a function deco itself has renamed reports its
 public name.
 
+Scanning on every save? `transpiler.NewScanCache()` gives you the same `Scan`
+with per-file incremental reuse — a rescan re-parses only what changed
+([reference](../reference/library#scan)).
+
 **Package-level hits** carry `PackageLevel: true` and an empty `Func` — the
 front-end for package-scoped metadata like a registration group's name or a
 route prefix:
